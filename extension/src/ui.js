@@ -8,7 +8,7 @@ const MARKUP = `
       <div class="panel" data-collapsed="false" role="complementary" aria-label="chesscan analysis">
         <header class="head" id="drag">
           <span class="grip" aria-hidden="true">&#10303;</span>
-          <span class="brand">chesscan</span>
+          <span class="brand" title="Stockfish 19 lite, running locally">chesscan</span>
           <span class="site" id="site"></span>
           <span class="live" id="live" title="searching"></span>
           <span class="prob" id="prob">&mdash;</span>
@@ -22,11 +22,9 @@ const MARKUP = `
           <div class="fen"><code id="fen">&mdash;</code><button class="btn" id="copy" aria-label="Copy FEN">copy</button></div>
           <div class="bar">
             <button class="btn" id="flip" aria-label="Flip side to move" title="Flip side to move">flip <b id="turn">w</b></button>
-            <button class="btn" id="arrow" aria-pressed="true" title="Show best-move arrow">arrow</button>
+            <label class="depth">guide<select id="guide" aria-label="Best-move arrow guide" title="Whose moves the arrow guides"></select></label>
             <label class="depth">d<select id="depth" aria-label="Search depth"></select></label>
             <button class="btn" id="pause" aria-pressed="false" title="Pause analysis">pause</button>
-            <span class="spacer"></span>
-            <span class="eng">stockfish 19 lite</span>
           </div>
         </div>
       </div>
@@ -74,7 +72,7 @@ export class Panel {
       copy: $("copy"),
       flip: $("flip"),
       turn: $("turn"),
-      arrow: $("arrow"),
+      guide: $("guide"),
       depth: $("depth"),
       pause: $("pause"),
       collapse: $("collapse"),
@@ -88,12 +86,24 @@ export class Panel {
       o.textContent = String(d);
       this.el.depth.appendChild(o);
     }
+    for (const [value, label] of [
+      ["auto", "auto"],
+      ["white", "white"],
+      ["black", "black"],
+      ["both", "both"],
+      ["off", "off"],
+    ]) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      this.el.guide.appendChild(o);
+    }
 
     this.el.close.addEventListener("click", () => this.h.onClose());
     this.el.collapse.addEventListener("click", () => this.h.onCollapse());
     this.el.pill.addEventListener("click", () => this.h.onOpen());
     this.el.flip.addEventListener("click", () => this.h.onFlip());
-    this.el.arrow.addEventListener("click", () => this.h.onArrow());
+    this.el.guide.addEventListener("change", () => this.h.onGuide(this.el.guide.value));
     this.el.pause.addEventListener("click", () => this.h.onPause());
     this.el.copy.addEventListener("click", () => this.h.onCopy(this.fen));
     this.el.depth.addEventListener("change", () => this.h.onDepth(Number(this.el.depth.value)));
@@ -179,8 +189,8 @@ export class Panel {
     this.el.depth.value = String(depth);
   }
 
-  setArrow(on) {
-    this.el.arrow.setAttribute("aria-pressed", on ? "true" : "false");
+  setGuide(guide) {
+    this.el.guide.value = guide;
   }
 
   setPaused(paused) {

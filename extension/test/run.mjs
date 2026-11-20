@@ -4,7 +4,7 @@
 
 import puppeteer from "puppeteer-core";
 import http from "node:http";
-import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -17,6 +17,8 @@ const root = dirname(fileURLToPath(import.meta.url));
 const extRoot = join(root, "..");
 const CHROMIUM = process.env.CHROMIUM || "/usr/bin/chromium";
 const PORT = 8123;
+
+const AFTER_E5_NF3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R";
 
 // --- unit checks on the pure modules ----------------------------------------
 
@@ -79,16 +81,20 @@ const panelEval = fn => `(() => { const s = document.getElementById('chesscan-ex
 
 async function readPanel(page) {
   return page.evaluate(
-    panelEval(`s => ({
-      fen: s.getElementById('fen').textContent,
-      turn: s.getElementById('turn').textContent,
-      status: s.getElementById('status').textContent,
-      prob: s.getElementById('prob').textContent,
-      lines: [...s.querySelectorAll('.line:not(.placeholder) .san')].map(e => e.textContent),
-      scores: [...s.querySelectorAll('.line:not(.placeholder) .sc')].map(e => e.textContent),
-      searching: s.getElementById('live').classList.contains('on'),
-      arrow: !!document.getElementById('chesscan-arrow-layer')?.querySelector('svg'),
-    })`),
+    panelEval(`s => {
+      const layer = document.getElementById('chesscan-arrow-layer');
+      return {
+        fen: s.getElementById('fen').textContent,
+        turn: s.getElementById('turn').textContent,
+        status: s.getElementById('status').textContent,
+        prob: s.getElementById('prob').textContent,
+        guide: s.getElementById('guide').value,
+        lines: [...s.querySelectorAll('.line:not(.placeholder) .san')].map(e => e.textContent),
+        scores: [...s.querySelectorAll('.line:not(.placeholder) .sc')].map(e => e.textContent),
+        searching: s.getElementById('live').classList.contains('on'),
+        arrow: !!layer && layer.style.display !== 'none' && !!layer.querySelector('svg'),
+      };
+    }`),
   );
 }
 
@@ -115,10 +121,37 @@ async function waitLines(page, timeout = 60000) {
   );
 }
 
+async function waitArrow(page, visible, timeout = 8000) {
+  await page.waitForFunction(
+    want => {
+      const layer = document.getElementById("chesscan-arrow-layer");
+      const shown = !!layer && layer.style.display !== "none" && !!layer.querySelector("svg");
+      return want ? shown : !shown;
+    },
+    { timeout },
+    visible,
+  );
+}
+
 async function setDepth(page, depth) {
   await page.evaluate(
     panelEval(`s => { const sel = s.getElementById('depth'); sel.value = '${depth}'; sel.dispatchEvent(new Event('change', { bubbles: true })); }`),
   );
+}
+
+async function setGuide(page, guide) {
+  await page.evaluate(
+    panelEval(`s => { const sel = s.getElementById('guide'); sel.value = '${guide}'; sel.dispatchEvent(new Event('change', { bubbles: true })); }`),
+  );
+}
+
+async function applyMove(page, fromXY, toXY) {
+  await page.evaluate(([from, to]) => {
+    const el = document.querySelector(`wc-chess-board .piece.square-${from}`);
+    if (!el) throw new Error(`no piece on square-${from}`);
+    el.classList.remove(`square-${from}`);
+    el.classList.add(`square-${to}`);
+  }, [fromXY, toXY]);
 }
 
 async function runBrowserChecks({ csp }) {
@@ -151,38 +184,47 @@ async function runBrowserChecks({ csp }) {
     assert.equal(p.turn, "w");
     assert.equal(p.lines.length, 3);
     assert.match(p.scores[0], /^[+#-]/);
+    assert.equal(p.guide, "auto");
     assert.ok(p.arrow, "best-move arrow should be drawn");
     assert.equal(p.status, "");
     console.log(`[${label}] start: ok (${p.lines[0]} ${p.scores[0]} ${p.prob})`);
     await page.screenshot({ path: join(root, `screenshot-${label}.png`) });
 
-    // 2. a move happens in the DOM -> turn flips without any site API
-    await page.evaluate(() => {
-      const board = document.querySelector("wc-chess-board");
-      const pawn = board.querySelector(".piece.wp.square-52");
-      pawn.classList.remove("square-52");
-      pawn.classList.add("square-54");
-      for (const cls of ["square-52", "square-54"]) {
-        const hl = document.createElement("div");
-        hl.className = `highlight ${cls}`;
-        hl.style.cssText = "position:absolute;width:60px;height:60px";
-        board.appendChild(hl);
-      }
-    });
+    // 2. guide selector: only the bottom side gets the arrow in auto mode
+    await setGuide(page, "black");
+    await waitArrow(page, false);
+    await setGuide(page, "auto");
+    await waitArrow(page, true);
+    console.log(`[${label}] guide gating: ok`);
+
+    // 3. a move happens in the DOM -> turn flips without any site API
+    await applyMove(page, "52", "54");
     await waitFen(page, `${AFTER_E4} b KQkq - 0 1`);
     await waitLines(page);
     p = await readPanel(page);
     assert.equal(p.turn, "b");
     console.log(`[${label}] move detection: ok (${p.lines[0]} ${p.scores[0]})`);
 
-    // 3. manual flip overrides the side to move
+    // 4. manual flip overrides the side to move
     await page.evaluate(panelEval(`s => s.getElementById('flip').click()`));
     await waitFen(page, `${AFTER_E4} w KQkq - 0 1`);
     console.log(`[${label}] manual flip: ok`);
     await page.evaluate(panelEval(`s => s.getElementById('flip').click()`));
     await waitFen(page, `${AFTER_E4} b KQkq - 0 1`);
 
-    // 4. flipped board, castled position, white to move via last-move highlight
+    // 5. two quick moves while a search is running: the stale bestmove must not
+    //    finalize the new job with no lines.
+    await applyMove(page, "57", "55"); // ...e5
+    await new Promise(r => setTimeout(r, 350));
+    await applyMove(page, "71", "63"); // Nf3
+    await waitFen(page, `${AFTER_E5_NF3} b KQkq - 0 1`);
+    await waitLines(page);
+    p = await readPanel(page);
+    assert.ok(p.lines.length >= 3, "lines must survive a stopped search");
+    assert.equal(p.turn, "b");
+    console.log(`[${label}] rapid moves: ok (${p.lines[0]})`);
+
+    // 6. flipped board: auto guides the bottom side, so no arrow on white's turn
     await page.goto(
       `http://127.0.0.1:${PORT}/?board=${encodeURIComponent(CASTLED)}&flip=1&last=g8f6`,
       { waitUntil: "load" },
@@ -191,10 +233,13 @@ async function runBrowserChecks({ csp }) {
     await waitLines(page);
     p = await readPanel(page);
     assert.equal(p.turn, "w");
-    assert.ok(p.arrow);
-    console.log(`[${label}] flipped + castled: ok (${p.lines[0]})`);
+    assert.equal(p.arrow, false, "auto must not guide the opponent");
+    await setGuide(page, "both");
+    await waitArrow(page, true);
+    console.log(`[${label}] flipped + guide: ok (${p.lines[0]})`);
+    await setGuide(page, "auto");
 
-    // 5. close -> pill, reopen -> panel
+    // 7. close -> pill, reopen -> panel
     await page.evaluate(panelEval(`s => s.getElementById('close').click()`));
     await page.waitForFunction(() => {
       const s = document.getElementById("chesscan-ext-root").shadowRoot;

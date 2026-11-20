@@ -11,7 +11,7 @@ import { Panel } from "./ui.js";
 
 const LOG = "[chesscan]";
 const ext = globalThis.browser ?? globalThis.chrome;
-const DEFAULTS = { depth: 18, arrow: true, running: true, collapsed: false, pos: null };
+const DEFAULTS = { depth: 18, guide: "auto", running: true, collapsed: false, pos: null };
 
 const state = {
   settings: null,
@@ -31,15 +31,24 @@ const state = {
 // --- settings ---------------------------------------------------------------
 
 async function loadSettings() {
+  const merge = saved => {
+    const settings = { ...DEFAULTS, ...(saved ?? {}) };
+    // v0.1 stored a boolean arrow toggle; map it onto the guide selector.
+    if (typeof saved?.arrow === "boolean" && saved.guide === undefined) {
+      settings.guide = saved.arrow ? "auto" : "off";
+    }
+    delete settings.arrow;
+    return settings;
+  };
   try {
     const r = await ext.storage.local.get("settings");
-    return { ...DEFAULTS, ...(r?.settings ?? {}) };
+    return merge(r?.settings);
   } catch {
     return new Promise(resolve => {
       try {
-        ext.storage.local.get("settings", v => resolve({ ...DEFAULTS, ...(v?.settings ?? {}) }));
+        ext.storage.local.get("settings", v => resolve(merge(v?.settings)));
       } catch {
-        resolve({ ...DEFAULTS });
+        resolve(merge(null));
       }
     });
   }
@@ -188,7 +197,16 @@ function drawArrow(rect, from, to, flipped) {
 
 function updateArrow() {
   const s = state.settings;
-  if (!s?.arrow || !s.running || !state.rect || !state.bestPv) {
+  const guide = s?.guide ?? "auto";
+  if (!s?.running || guide === "off" || !state.rect || !state.bestPv) {
+    hideArrow();
+    return;
+  }
+  // "auto" guides the side sitting at the bottom of the board: the player's
+  // own colour in a game, white on a spectator/analysis board.
+  const guideColor =
+    guide === "both" ? null : guide === "auto" ? (state.flipped ? "b" : "w") : guide === "white" ? "w" : "b";
+  if (guideColor && state.turn !== guideColor) {
     hideArrow();
     return;
   }
@@ -375,9 +393,9 @@ const panel = new Panel({
     state.fen = null;
     tick();
   },
-  onArrow() {
-    state.settings.arrow = !state.settings.arrow;
-    panel.setArrow(state.settings.arrow);
+  onGuide(guide) {
+    state.settings.guide = guide;
+    panel.setGuide(guide);
     saveSettings();
     updateArrow();
   },
@@ -438,7 +456,7 @@ async function boot() {
   state.settings = await loadSettings();
   panel.mount();
   panel.setDepth(state.settings.depth);
-  panel.setArrow(state.settings.arrow);
+  panel.setGuide(state.settings.guide);
   panel.setPaused(!state.settings.running);
   panel.setCollapsed(state.settings.collapsed);
   panel.pos = state.settings.pos;

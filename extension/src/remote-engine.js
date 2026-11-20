@@ -11,7 +11,7 @@ export class RemoteEngine {
     this.onError = onError || null;
     this.key = `ck-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}`;
     ext.runtime.onMessage.addListener(msg => this.receive(msg));
-    setInterval(() => this.heartbeat(), 10000);
+    setInterval(() => this.heartbeat(), 5000);
   }
 
   send(msg) {
@@ -50,7 +50,7 @@ export class RemoteEngine {
   heartbeat() {
     const job = this.job;
     if (!job) return;
-    if (Date.now() - job.lastSeen > 12000) {
+    if (Date.now() - job.lastSeen > 8000) {
       // The worker restarted (or the search died): ask again.
       job.jobId = `${this.key}:${++this.seq}`;
       job.lastSeen = Date.now();

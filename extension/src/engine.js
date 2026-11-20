@@ -68,6 +68,10 @@ export class Engine {
     this.job = null;
     this.watchdog = null;
     this.onError = null;
+    // A stopped search still emits its final info lines and one bestmove.
+    // Those belong to the old position and must not touch the new job.
+    this.searchActive = false;
+    this.staleBestmoves = 0;
   }
 
   ensure() {
@@ -108,6 +112,11 @@ export class Engine {
         } else if (data.startsWith("info ")) {
           this.onInfo(data);
         } else if (data.startsWith("bestmove")) {
+          if (this.staleBestmoves > 0) {
+            this.staleBestmoves--;
+            return;
+          }
+          this.searchActive = false;
           this.finish();
         }
       };
@@ -126,7 +135,7 @@ export class Engine {
 
   onInfo(line) {
     const job = this.job;
-    if (!job) return;
+    if (!job || this.staleBestmoves > 0) return;
     const info = parseInfo(line);
     if (!info) return;
     const prev = job.lines.get(info.multipv);
@@ -160,11 +169,12 @@ export class Engine {
         this.worker.postMessage(`setoption name MultiPV value ${multipv}`);
         this.worker.postMessage(`position fen ${fen}`);
         this.worker.postMessage(`go depth ${depth}`);
+        this.searchActive = true;
         clearTimeout(this.watchdog);
         this.watchdog = setTimeout(() => {
           if (this.job !== job) return;
-          this.worker.postMessage("stop");
-          this.finish();
+          this.stop();
+          this.finishJob(job);
         }, 25000);
       })
       .catch(err => {
@@ -177,6 +187,10 @@ export class Engine {
     const job = this.job;
     if (!job) return;
     this.job = null;
+    this.finishJob(job);
+  }
+
+  finishJob(job) {
     clearTimeout(this.watchdog);
     this.watchdog = null;
     const lines = [...job.lines.values()].sort((a, b) => a.multipv - b.multipv);
@@ -188,8 +202,10 @@ export class Engine {
     this.gen++;
     clearTimeout(this.watchdog);
     this.watchdog = null;
-    if (this.job) {
-      this.job = null;
+    if (this.job) this.job = null;
+    if (this.searchActive) {
+      this.searchActive = false;
+      this.staleBestmoves++;
       if (this.worker) this.worker.postMessage("stop");
     }
   }

@@ -15,11 +15,12 @@ export function createEngineHost({ deliver }) {
     let session = sessions.get(key);
     if (!session) {
       const engine = new Engine({ jsUrl: ext.runtime.getURL(ENGINE_JS) });
-      session = { engine, key, jobId: null, seq: 0, lastUsed: Date.now() };
+      session = { engine, key, jobId: null, seq: 0, replyTab: null, lastUsed: Date.now() };
       engine.onError = err => {
         deliver({
           type: "chesscan:error",
           jobId: session.jobId,
+          replyTab: session.replyTab,
           message: err.message,
         });
       };
@@ -38,17 +39,18 @@ export function createEngineHost({ deliver }) {
         if (session.jobId === msg.jobId || msg.seq <= session.seq) return;
         session.jobId = msg.jobId;
         session.seq = msg.seq;
+        session.replyTab = msg.replyTab ?? null;
         session.engine.analyze(msg.fen, {
           depth: msg.depth,
           multipv: msg.multipv || 3,
           onLines: lines => {
             if (session.jobId !== msg.jobId) return;
             session.lastUsed = Date.now();
-            deliver({ type: "chesscan:lines", jobId: msg.jobId, lines });
+            deliver({ type: "chesscan:lines", jobId: msg.jobId, replyTab: session.replyTab, lines });
           },
           onDone: lines => {
             if (session.jobId !== msg.jobId) return;
-            deliver({ type: "chesscan:done", jobId: msg.jobId, lines });
+            deliver({ type: "chesscan:done", jobId: msg.jobId, replyTab: session.replyTab, lines });
           },
         });
         break;

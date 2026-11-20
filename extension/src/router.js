@@ -58,8 +58,10 @@ export function startRouter({ host }) {
   const routes = new Map(); // jobId -> tabId
 
   function deliver(payload) {
-    const tabId = routes.get(payload.jobId);
-    if (tabId === undefined) return;
+    // replyTab travels with the job so routing survives a service-worker
+    // restart; the in-memory map is only a fallback for older messages.
+    const tabId = payload.replyTab ?? routes.get(payload.jobId);
+    if (tabId === undefined || tabId === null) return;
     if (payload.type === "chesscan:done" || payload.type === "chesscan:error") {
       routes.delete(payload.jobId);
     }
@@ -77,8 +79,9 @@ export function startRouter({ host }) {
     if (msg.type === "chesscan:analyze") {
       const tabId = sender.tab?.id;
       if (tabId !== undefined) routes.set(msg.jobId, tabId);
-      if (host) host.handle(msg);
-      else forwardToEngine({ ...msg, target: "engine" });
+      const routed = { ...msg, replyTab: tabId ?? msg.replyTab ?? null };
+      if (host) host.handle(routed);
+      else forwardToEngine({ ...routed, target: "engine" });
       return;
     }
 

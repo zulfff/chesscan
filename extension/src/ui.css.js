@@ -41,8 +41,7 @@ export const CSS = `
   background: #3a3e46;
   flex: none;
 }
-.live.on { background: #d7b061; animation: cs-pulse 1.1s ease-in-out infinite; }
-@keyframes cs-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+.live.on { background: #d7b061; }
 .prob {
   margin-left: auto;
   font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -110,8 +109,6 @@ export const CSS = `
   padding: 6px 8px;
   border-top: 1px solid #23262c;
 }
-.bar .spacer { flex: 1; }
-.eng { color: #6d737c; font-size: 10px; white-space: nowrap; }
 
 .btn {
   appearance: none;
@@ -163,6 +160,5 @@ export const CSS = `
 
 @media (prefers-reduced-motion: reduce) {
   .eval .fill { transition: none; }
-  .live.on { animation: none; }
 }
 `;
