@@ -69,12 +69,18 @@ analysis if the service worker is torn down mid-search.
 npm test                          # unit + fixture e2e in real Chromium (headless)
 node test/real-sites.mjs          # manual: real chess.com/analysis
 node test/real-move.mjs           # manual: drag e2-e4 on the real board
+node test/real-game.mjs 12        # manual: play 12 plies vs a chess.com bot
 ```
 
 `npm test` runs the extension against DOM fixtures modelled on chess.com, on
 both a permissive page and a page with `default-src 'self'`, using real
 Stockfish. It checks the FEN, turn inference, move detection, manual flip,
 flipped boards, engine lines, the arrow, and close/reopen.
+
+`test/real-game.mjs` goes further: it starts a guest game against a chess.com
+bot, plays the moves by dragging on the board, and after every ply compares the
+extension's FEN with an independent DOM read (and requires lines and an arrow).
+It was run for 12 plies with every position matching.
 
 Set `CHROMIUM=/path/to/chrome` if `chromium` is not in `PATH`.
 
