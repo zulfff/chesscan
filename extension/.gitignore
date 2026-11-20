@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+test/.tmp-ext/
+test/.real-ext/
+test/.cg/
+test/screenshot-*.png
+test/real-*.png
+*.tgz
+*.zip

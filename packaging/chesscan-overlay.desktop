@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Chess Scanner Overlay
+GenericName=Chess Board Reader (overlay)
+Comment=Small always-on-top panel with engine lines while you play
+Exec=chesscan-gui --overlay --auto
+Icon=chesscan
+Terminal=false
+Categories=Game;Utility;
+Keywords=chess;engine;stockfish;analysis;scanner;overlay;
+StartupNotify=true

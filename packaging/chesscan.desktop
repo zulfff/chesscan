@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Chess Scanner
+GenericName=Chess Board Reader
+Comment=Read a chess board off your screen and show engine lines
+Exec=chesscan-gui
+Icon=chesscan
+Terminal=false
+Categories=Game;Utility;
+Keywords=chess;engine;stockfish;analysis;scanner;
+StartupNotify=true

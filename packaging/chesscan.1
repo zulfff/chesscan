@@ -1,0 +1,125 @@
+.TH CHESSCAN 1 "November 2026" "chesscan 0.4.0" "User Commands"
+.SH NAME
+chesscan \- live screen chess scanner with engine evaluation HUD
+.SH SYNOPSIS
+.B chesscan
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B chesscan
+captures a rectangle of the screen containing a chess board, recognises the
+pieces, converts the position to FEN, queries a UCI engine, and displays the
+best lines with an evaluation and win probability in an always-on-top panel.
+.PP
+Board recognition is theme agnostic. Each square's background colour is
+estimated locally, pixels far from it are treated as ink, and the resulting
+silhouette plus ink colour forms a descriptor. The 64 descriptors are clustered
+once during calibration and labelled by the user; the learned prototypes are
+stored in
+.I chesscan.json
+and reused afterwards.
+.SH OPTIONS
+.TP
+.B \-\-detect
+Locate the board automatically from its grid lines, save the rect, and exit.
+.TP
+.B \-\-auto
+Re-detect the board at startup, and again if reads start failing (for example
+after the window was moved or resized).
+.TP
+.BI \-\-rect " x,y,w,h"
+Set the board rectangle directly, bypassing detection.
+.TP
+.B \-\-flip
+The board is drawn with black at the bottom.
+.TP
+.B \-\-doctor
+Report session type, monitors, a capture attempt and board detection result, then
+exit. First thing to run when capture fails.
+.TP
+.B \-\-calibrate
+Cluster the current board and prompt for a FEN piece character per cluster.
+Required once per theme; descriptors are scale-normalised, so resizing the board
+alone does not require recalibration.
+.TP
+.B \-\-labels " c1,c2,..."
+Non-interactive cluster labels for calibration, in cluster order.
+.TP
+.B \-\-snapshot
+Print the detected board and FEN, then exit. No engine, no HUD.
+.TP
+.B \-\-dump\-squares
+Print one line per square: ink coverage, ink colour, and the nearest prototype
+with its distance. Use it to tell a bad board rectangle from a bad classifier.
+.TP
+.BI \-\-file " PATH"
+Read a saved screenshot instead of the live screen. Useful for testing and for
+Wayland sessions where capture is unreliable.
+.TP
+.BI \-\-monitor " N"
+Monitor index to capture. Default 0.
+.TP
+.BI \-\-engine " PATH"
+UCI engine executable. Default
+.IR stockfish .
+.TP
+.BI \-\-depth " N"
+Search depth. Default 18.
+.TP
+.BI \-\-interval " MS"
+Scan cadence in milliseconds. Default 900.
+.TP
+.BR \-\-white ", " \-\-black
+Which side is to move at startup. Board changes toggle the side from there.
+.TP
+.BI \-\-classes " N"
+Number of clusters to learn during calibration. Default 13.
+.TP
+.B \-\-no\-hud
+Terminal output only.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/chesscan/config.json
+Board rectangle, engine settings, and learned piece prototypes.
+.B CHESSCAN_CONFIG
+overrides the path; an existing
+.I ./chesscan.json
+from older setups is still honoured.
+.SH EXAMPLES
+Find the board and learn the theme:
+.PP
+.nf
+  chesscan --auto --calibrate
+.fi
+.PP
+Then run:
+.PP
+.nf
+  chesscan
+.fi
+.PP
+Check recognition from a screenshot:
+.PP
+.nf
+  chesscan --file board.png --snapshot
+.fi
+.SH LIMITATIONS
+Live screen capture uses X11. On a Wayland session the capture backend cannot
+read the screen and reports "screen capture failed"; log in with "GNOME on Xorg"
+or use
+.B \-\-file
+with a screenshot. Run
+.B chesscan \-\-doctor
+to confirm which session you are in.
+.PP
+Side to move is inferred by toggling on each detected board change rather than
+read from the screen; start it correctly with
+.B \-\-white
+or
+.B \-\-black .
+Castling rights are inferred from king and rook placement. En passant and move
+history cannot be recovered from pixels.
+.PP
+The HUD is deliberately opaque. Per-pixel alpha arrows drawn over the board
+require a compositor ARGB path and are not implemented.
+.SH SEE ALSO
+.BR stockfish (6)

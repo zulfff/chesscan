@@ -1,0 +1,58 @@
+.TH CHESSCAN-GUI 1 "November 2026" "chesscan 0.4.0" "User Commands"
+.SH NAME
+chesscan-gui \- desktop chess board scanner
+.SH SYNOPSIS
+.B chesscan-gui
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+Desktop front end for
+.BR chesscan (1).
+It captures the screen, finds the chess board, reads the position into FEN,
+queries a UCI engine and shows the best lines, the evaluation and the winning
+probability. The best move is drawn as an arrow on a live preview of the board.
+.PP
+The window is a normal desktop window, so it can be moved, resized, minimised
+and switched between like any other application. With
+.B \-\-overlay
+it becomes a small always-on-top panel instead, for use while playing.
+.PP
+Detecting and calibrating hide the window for a moment before capturing the
+screen, so the scanner never mistakes its own window for the board.
+.SH OPTIONS
+.TP
+.B \-\-overlay
+Small borderless always-on-top panel instead of the full window: win
+percentage, evaluation bar, the top engine lines, a side-to-move flip,
+a re-detect button and start/stop. Drag it by its handle; the position is
+remembered.
+.TP
+.B \-\-auto
+Detect the board and start scanning as soon as the window opens.
+.TP
+.B \-\-calibrate
+Detect the board and open the calibration dialog.
+.TP
+.BI \-\-pos " X,Y"
+Place the window at those screen coordinates. Overrides the remembered
+overlay position.
+.SH GETTING STARTED
+.PP
+.nf
+  1. Launch chesscan-gui
+  2. Press "Detect board"
+  3. Press "Calibrate" once per board theme, label the clusters, Apply
+  4. Press "Start scanning"
+.fi
+.PP
+Calibration is needed once per theme, resolution and board size. It clusters
+the 64 squares and shows what each cluster actually looks like, so labelling is
+a look rather than a guess.
+.SH FILES
+.TP
+.I $XDG_CONFIG_HOME/chesscan/config.json
+Board rectangle, engine settings and learned piece prototypes. Set
+.B CHESSCAN_CONFIG
+to use another file.
+.SH SEE ALSO
+.BR chesscan (1),
+.BR stockfish (6)

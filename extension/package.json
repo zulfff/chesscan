@@ -1,0 +1,21 @@
+{
+  "name": "chesscan-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser extension: live board reading on chess.com with local Stockfish analysis.",
+  "license": "MIT",
+  "scripts": {
+    "build": "node build.mjs",
+    "pack": "node build.mjs && cd build/chrome && zip -qr ../../chesscan-chrome.zip . && cd ../firefox && zip -qr ../../chesscan-firefox.zip .",
+    "test": "node test/run.mjs"
+  },
+  "dependencies": {
+    "chess.js": "^1.4.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "puppeteer-core": "^24.0.0",
+    "stockfish": "19.0.1"
+  }
+}
