@@ -6,12 +6,12 @@ import { readChesscom } from "./boards/chesscom.js";
 import {
   toFen,
   inferCastling,
-  updateCastling,
   plausible,
   opponentInCheck,
+  successorOf,
   FILES,
 } from "./fen.js";
-import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "./turn.js";
+import { turnFromDiff, turnFromLastMove } from "./turn.js";
 import { winProbability, whiteScore, formatScore } from "./engine.js";
 import { RemoteEngine } from "./remote-engine.js";
 import { Humanizer, Form, SKILL, thinkTime } from "./humanize.js";
@@ -33,9 +33,13 @@ const DEFAULTS = {
 const state = {
   settings: null,
   prevPieces: null,
-  turn: "w",
+  turn: "w", // the side the panel is showing (a manual flip changes this)
+  realTurn: "w", // the side actually to move, never overridden by a flip
   manualTurn: null,
-  fen: null,
+  fen: null, // the FEN being shown/analysed
+  anchorFen: null, // last accepted real position; the only base for the next move
+  candidateKey: null, // a changed board waiting to prove it is not a frame
+  candidateHits: 0,
   rect: null,
   flipped: false,
   boardEl: null,
@@ -588,7 +592,10 @@ function maybeAutoplay() {
   // Only a finished search is a decision. Intermediate info lines are still
   // changing, and playing one would be playing a half-thought.
   if (!state.settled) return;
-  if (side !== "both" && state.turn !== side) return;
+  // A manual flip shows the other side's possibilities; it is not this board's
+  // turn and nothing may be played from it.
+  if (state.manualTurn) return;
+  if (side !== "both" && state.realTurn !== side) return;
   const fen = state.fen;
   if (!fen || state.playedFor === fen) return;
   if (state.lastRender?.fen !== fen) return;
@@ -599,7 +606,7 @@ function maybeAutoplay() {
     disarm(`refused ${uci}: not legal here`);
     return;
   }
-  const delay = autoplayDelay(fen, uci, state.lastRender.lines, state.turn);
+  const delay = autoplayDelay(fen, uci, state.lastRender.lines, state.realTurn);
   state.autoTimer = setTimeout(() => {
     state.autoTimer = null;
     dispatchAutoplay(fen, uci);
@@ -706,13 +713,25 @@ function samePieces(a, b) {
   return true;
 }
 
+/**
+ * FEN move number from the index of the last played move. Index 0 is White's
+ * first move, so after `1...e5` (index 1) White is about to play move 2.
+ */
+function fullmoveOf(ply) {
+  return ply === null || ply === undefined ? 1 : Math.floor((ply + 1) / 2) + 1;
+}
+
 function resetForNavigation() {
   disarm("new page");
   state.lastUrl = location.href;
   state.prevPieces = null;
   state.manualTurn = null;
   state.turn = "w";
+  state.realTurn = "w";
   state.fen = null;
+  state.anchorFen = null;
+  state.candidateKey = null;
+  state.candidateHits = 0;
   state.pvUci = null;
   state.human = null;
   state.castling = null;
@@ -735,6 +754,9 @@ function tick() {
     state.boardEl = null;
     state.prevPieces = null;
     state.fen = null;
+    state.anchorFen = null;
+    state.candidateKey = null;
+    state.candidateHits = 0;
     state.pvUci = null;
     state.human = null;
     state.castling = null;
@@ -763,65 +785,131 @@ function tick() {
   }
 
   const diff = turnFromDiff(state.prevPieces, board.pieces);
-  // The move list is the one signal chess.com states outright: which ply is on
-  // the board and which side just played it. When it is there, trust it over
-  // the two inferences.
+  const same = samePieces(state.prevPieces, board.pieces);
+  // The move list is the page's own statement of which ply is on the board.
+  // It is not updated atomically with the pieces, though: in fast games one is
+  // routinely a frame ahead of the other. So it is a tiebreaker, not proof.
   const ply = Number.isInteger(board.ply) ? board.ply : null;
   const step = ply !== null && state.ply !== null ? ply - state.ply : null;
-  const same = samePieces(state.prevPieces, board.pieces);
-  const realMove = step !== null ? step === 1 : !!diff;
-  const keep = step !== null ? step === 0 : !diff && same;
 
-  if (realMove) state.manualTurn = null;
-  let turn;
-  if (state.manualTurn) {
-    turn = state.manualTurn;
-  } else if (board.moveTurn) {
-    turn = board.moveTurn;
-  } else if (diff) {
-    turn = diff;
-  } else {
-    turn = turnFromLastMove(board.pieces, board.lastMove) ?? state.turn ?? "w";
+  // Explain the board as exactly one legal move from the last position we
+  // accepted. A frame in flight — a piece drawn on two squares, a capture whose
+  // victim has not been removed yet, two moves between ticks — matches nothing,
+  // and is not allowed to become the new anchor.
+  const successor = !same && state.anchorFen ? successorOf(state.anchorFen, board.pieces) : null;
+
+  // The pieces did not change, so the placement is the same position. If the
+  // list moved forward, the board is behind it: hold the last good read and let
+  // the pieces catch up. If it moved back, the list is showing an identical
+  // (repeated) position and only the turn and move number differ; take those.
+  if (same && step !== null && step > 0) {
+    refreshGeometry();
+    return;
   }
-  // The side to move cannot change without a move. Same pieces, same ply, no
-  // manual flip: whatever the highlights say, it is still the same turn. This
-  // is the invariant behind the reader's two-highlight rule, checked again here
-  // so a single stray signal cannot rewrite the position.
-  if (keep && !state.manualTurn && state.prevPieces) turn = state.turn;
 
-  // Rights and en passant cannot be read off a snapshot. A real move lets us
-  // carry them forward exactly; a jump in the move list (or the first read)
-  // falls back to placement and drops the en passant target.
+  // A changed board with no legal explanation is a frame in flight until it has
+  // held still. How long "still" has to be depends on what else we know:
+  //
+  //   first read ............ nothing to compare against, take it
+  //   list jumped ............ the list states where the board is, one more look
+  //   one ply, or list behind  a frame is plausible, three looks
+  //   no list at all .......... no independent evidence, so never: a duplicated
+  //                             piece and two real moves look identical, and a
+  //                             wrong position is worse than a late one
+  //
+  // A board that holds still has to be re-read on a timer, because the page
+  // stops mutating the moment the animation ends; waiting for the next DOM
+  // event would mean never accepting a real jump.
+  let fallback = false;
+  if (!same && !successor) {
+    const key = toFen(board.pieces, "w").split(" ")[0] + "|" + (ply ?? "");
+    if (state.candidateKey === key) state.candidateHits++;
+    else {
+      state.candidateKey = key;
+      state.candidateHits = 1;
+    }
+    let need;
+    if (state.anchorFen === null) need = 1;
+    else if (step === null) need = ply === null ? Infinity : 2;
+    else if (step === 0) need = Infinity; // the list is behind: its turn is stale
+    else if (step === 1) need = 3;
+    else need = 2;
+    fallback = state.candidateHits >= need;
+    if (!fallback) {
+      if (Number.isFinite(need)) schedule(160);
+      refreshGeometry();
+      return;
+    }
+  } else {
+    state.candidateKey = null;
+    state.candidateHits = 0;
+  }
+
+  // Build the position. A legal successor carries its own turn, rights and en
+  // passant target exactly. A jump or an unexplained read falls back to what is
+  // visible, and drops the target.
+  let turn;
+  let realTurn;
   let castling;
   let enPassant;
-  if (realMove) {
-    castling = state.castling ?? inferCastling(state.prevPieces);
-    castling = updateCastling(castling, state.prevPieces, board.pieces);
-    enPassant = enPassantFromDiff(state.prevPieces, board.pieces);
-  } else if (keep) {
-    // A UI action (flip, play mode, depth) re-ticks the same board. Keep the
-    // tracked rights and target instead of inferring them away.
+  let nextPly;
+  let fen;
+
+  if (same && (step === null || step === 0)) {
+    // Same board, same ply: reuse the position exactly. A UI action re-ticks
+    // it, and the rights and target already tracked are still the right ones.
+    realTurn = state.realTurn ?? "w";
+    turn = state.manualTurn ?? realTurn;
     castling = state.castling ?? inferCastling(board.pieces);
     enPassant = state.enPassant;
-  } else {
+    nextPly = state.ply;
+    fen = toFen(board.pieces, turn, { castling, enPassant, fullmove: fullmoveOf(nextPly) });
+  } else if (same) {
+    // Same placement, earlier ply: a repeated position in the move list. The
+    // board cannot be wrong about the pieces, so only the side to move and the
+    // move number come from the list.
+    realTurn = board.moveTurn ?? state.realTurn ?? "w";
+    turn = state.manualTurn ?? realTurn;
     castling = inferCastling(board.pieces);
     enPassant = null;
+    nextPly = ply;
+    fen = toFen(board.pieces, turn, { castling, enPassant, fullmove: fullmoveOf(nextPly) });
+  } else if (successor) {
+    // One legal move: the real turn is the successor's, and a manual "what if"
+    // flip ends here.
+    state.manualTurn = null;
+    const [placement, succTurn, succCastling, succEp] = successor.split(" ");
+    realTurn = succTurn;
+    turn = succTurn;
+    castling = succCastling === "-" ? "" : succCastling;
+    enPassant = succEp === "-" ? null : succEp;
+    // Count the move we actually adopted, not the list's idea of it: when the
+    // list runs a tick ahead the next same-board read has to hold. With no list
+    // there is no move number to count from, so it stays unknown.
+    nextPly = state.ply === null ? (ply ?? null) : state.ply + 1;
+    fen = `${placement} ${succTurn} ${succCastling} ${succEp} 0 ${fullmoveOf(nextPly)}`;
+  } else {
+    // A jump (navigation, two moves between ticks) or an unexplained but stable
+    // read. The move list states the side outright; otherwise fall back to the
+    // two independent inferences.
+    realTurn =
+      board.moveTurn ?? diff ?? turnFromLastMove(board.pieces, board.lastMove) ?? state.realTurn ?? "w";
+    turn = state.manualTurn ?? realTurn;
+    castling = inferCastling(board.pieces);
+    enPassant = null;
+    // The list is the only reason this branch can run, and it says where the
+    // board is — including backwards, when the user clicks an earlier node.
+    nextPly = ply ?? (state.ply === null ? null : state.ply + 1);
+    fen = toFen(board.pieces, turn, { castling, enPassant, fullmove: fullmoveOf(nextPly) });
   }
-  state.castling = castling;
-  state.enPassant = enPassant;
-  state.ply = ply;
 
-  // The move list knows the real move number, so SAN in the panel stops
-  // restarting at move 1 in the middle of a game.
-  const fullmove = ply !== null ? Math.floor(ply / 2) + 1 : 1;
-
-  let fen = toFen(board.pieces, turn, { castling, enPassant, fullmove });
   try {
     new Chess(fen);
   } catch {
     // Flipping the side by hand can leave an en passant square that is illegal
-    // for the new side to move. Keep the position, drop the target.
-    fen = toFen(board.pieces, turn, { castling, enPassant: "-", fullmove });
+    // for the new side to move. Show the position without the target, but keep
+    // tracking it: flipping back has to restore it.
+    fen = toFen(board.pieces, turn, { castling, enPassant: null, fullmove: fullmoveOf(nextPly) });
     try {
       new Chess(fen);
     } catch {
@@ -839,8 +927,23 @@ function tick() {
     return;
   }
 
+  const fullmove = fullmoveOf(nextPly);
+  let anchorFen = toFen(board.pieces, realTurn, { castling, enPassant, fullmove });
+  try {
+    new Chess(anchorFen);
+  } catch {
+    anchorFen = toFen(board.pieces, realTurn, { castling, enPassant: "-", fullmove });
+  }
+
   state.turn = turn;
+  state.realTurn = realTurn;
   state.prevPieces = board.pieces;
+  state.castling = castling;
+  state.enPassant = enPassant;
+  state.ply = nextPly;
+  // The anchor is the real position, never the manually flipped view: the next
+  // real move has to be explained from the board's own side to move.
+  state.anchorFen = anchorFen;
   panel.setSite(board.site);
   panel.setStatus(state.engineError || (state.settings.running ? "" : "Paused."));
   panel.setFen(fen, turn);
@@ -870,9 +973,9 @@ function tick() {
 }
 
 let debounce = null;
-function schedule() {
+function schedule(delay = 120) {
   clearTimeout(debounce);
-  debounce = setTimeout(tick, 120);
+  debounce = setTimeout(tick, delay);
 }
 
 const observer = new MutationObserver(mutations => {
@@ -905,7 +1008,11 @@ const panel = new Panel({
     saveSettings();
   },
   onFlip() {
-    state.manualTurn = state.turn === "w" ? "b" : "w";
+    // A manual flip is a "what if" view of the other side, not the board's real
+    // turn. Autoplay must never fire a move from that view, so stop it here.
+    if (state.armed) disarm("manual flip");
+    const next = (state.manualTurn ?? state.realTurn) === "w" ? "b" : "w";
+    state.manualTurn = next === state.realTurn ? null : next;
     state.fen = null;
     tick();
   },

@@ -132,6 +132,8 @@ export function plausible(pieces) {
   let bKing = -1;
   const pawns = { w: 0, b: 0 };
   const total = { w: 0, b: 0 };
+  const extra = { w: 0, b: 0 };
+  const count = { w: { p: 0, n: 0, b: 0, r: 0, q: 0 }, b: { p: 0, n: 0, b: 0, r: 0, q: 0 } };
   for (let sq = 0; sq < 64; sq++) {
     const p = pieces[sq];
     if (!p) continue;
@@ -144,10 +146,22 @@ export function plausible(pieces) {
     if (p.type === "p" && (rankOf(sq) === 0 || rankOf(sq) === 7)) return false;
     if (p.type === "p") pawns[p.color]++;
     total[p.color]++;
+    if (count[p.color][p.type] !== undefined) count[p.color][p.type]++;
   }
   if (kings !== 2) return false;
   if (pawns.w > 8 || pawns.b > 8) return false;
   if (total.w > 16 || total.b > 16) return false;
+  // A promoted piece costs a pawn. A third knight beside eight pawns is not a
+  // position any game can reach; it is the same piece drawn on two squares
+  // while an animation runs. This catches duplicates that chess.js accepts.
+  for (const c of ["w", "b"]) {
+    extra[c] =
+      Math.max(0, count[c].r - 2) +
+      Math.max(0, count[c].n - 2) +
+      Math.max(0, count[c].b - 2) +
+      Math.max(0, count[c].q - 1);
+    if (pawns[c] + extra[c] > 8) return false;
+  }
   // Kings can never stand on touching squares. This catches a mid-animation
   // frame or a stale piece that the DOM has not cleaned up yet.
   if (wKing >= 0 && bKing >= 0) {
@@ -156,6 +170,49 @@ export function plausible(pieces) {
     if (dx <= 1 && dy <= 1) return false;
   }
   return true;
+}
+
+/**
+ * Explain `pieces` as exactly one legal move from `fen`.
+ *
+ * Returns the resulting FEN, or null when no single legal move produces that
+ * board (or when more than one does, which would be ambiguous). This is the
+ * only test that cannot be fooled by a frame in flight: a piece drawn on two
+ * squares, a capture whose victim has not been removed yet, or a board that
+ * jumped two moves between ticks is not the result of any legal move, while a
+ * board that moved a moment before the move list caught up is.
+ *
+ * `fen` must be the last *accepted* position, never the last DOM read, so one
+ * transient frame cannot poison the comparison that follows it.
+ */
+export function successorOf(fen, pieces) {
+  if (!fen || !Array.isArray(pieces) || pieces.length !== 64) return null;
+  const want = toFen(pieces, "w").split(" ")[0];
+  let game;
+  try {
+    game = new Chess(fen);
+  } catch {
+    return null;
+  }
+  let found = null;
+  // chess.js fills `after` for every verbose move, so this never has to mutate
+  // the game — important when the board ticks every 120 ms.
+  for (const move of game.moves({ verbose: true })) {
+    if (move.after.split(" ")[0] !== want) continue;
+    // Two different moves producing the same board would make the turn a
+    // guess. No legal pair does, but refusing is cheaper than being wrong.
+    if (found) return null;
+    found = move;
+  }
+  if (!found) return null;
+  const fields = found.after.split(" ");
+  // chess.js omits the en passant target unless a capture is legal right now.
+  // The board still has one after a double push, and keeping it makes the FEN a
+  // faithful record of the position rather than of one engine's shorthand.
+  if (found.piece === "p" && Math.abs(Number(found.to[1]) - Number(found.from[1])) === 2) {
+    fields[3] = `${found.from[0]}${(Number(found.from[1]) + Number(found.to[1])) / 2}`;
+  }
+  return fields.join(" ");
 }
 
 /**

@@ -10,11 +10,11 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { Chess } from "chess.js";
 
-import { toFen, inferCastling, updateCastling, plausible, opponentInCheck } from "../src/fen.js";
+import { toFen, inferCastling, updateCastling, plausible, opponentInCheck, successorOf } from "../src/fen.js";
 import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "../src/turn.js";
 import { squareFromTransform } from "../src/boards/chesscom.js";
 import { Humanizer, Form, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
-import { chesscomHtml, fenPieces, FIXTURE_JS, START, AFTER_E4, AFTER_E4_E5_NF3, CASTLED } from "./fixtures.mjs";
+import { chesscomHtml, fenPieces, FIXTURE_JS, START, AFTER_E4, AFTER_E4_E5_NF3, CASTLED, squareIndex } from "./fixtures.mjs";
 import { squareCenter, parseUci, legalMove, dragMove, squareName, queenPicker, jitterPoint } from "../src/autoplay.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -23,6 +23,7 @@ const CHROMIUM = process.env.CHROMIUM || "/usr/bin/chromium";
 const PORT = 8123;
 
 const AFTER_E5_NF3 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R";
+const AFTER_E4_E5 = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR";
 
 // --- unit checks on the pure modules ----------------------------------------
 
@@ -53,6 +54,20 @@ function unitChecks() {
   tooMany[20] = { color: "w", type: "p" };
   tooMany[60] = { color: "b", type: "k" };
   assert.ok(!plausible(tooMany), "seventeen white pieces must be rejected");
+
+  // A promoted piece costs a pawn. A duplicate piece keeps every pawn, which no
+  // game can reach — that is a piece drawn twice during an animation, not a
+  // position. chess.js accepts it, so the count has to be checked here.
+  const threeKnights = new Array(64).fill(null);
+  threeKnights[4] = { color: "w", type: "k" };
+  threeKnights[60] = { color: "b", type: "k" };
+  threeKnights[1] = { color: "w", type: "n" };
+  threeKnights[6] = { color: "w", type: "n" };
+  threeKnights[18] = { color: "w", type: "n" };
+  for (let f = 0; f < 8; f++) threeKnights[8 + f] = { color: "w", type: "p" };
+  assert.ok(!plausible(threeKnights), "a third knight beside eight pawns must be rejected");
+  threeKnights[8] = null; // one pawn paid for the promotion
+  assert.ok(plausible(threeKnights), "a third knight with seven pawns is reachable");
 
   // A legal position never has the side that just moved still in check. This is
   // the check chess.js does not perform, and it catches a stitched snapshot.
@@ -113,6 +128,36 @@ function unitChecks() {
   assert.equal(squareFromTransform("translate(700%, 700%)", true, 60), 56); // a8
   assert.equal(squareFromTransform("translate(240px, 360px)", false, 60), 12); // e2
   assert.equal(squareFromTransform("translate(-50%, -50%)", false, 60), null);
+
+  // A board is only a new position if exactly one legal move produces it. This
+  // is what stops a frame in flight from becoming the position being analysed.
+  const boardOf = placement => {
+    const out = new Array(64).fill(null);
+    for (const p of fenPieces(placement)) out[p.rank * 8 + p.file] = { color: p.color, type: p.type };
+    return out;
+  };
+  assert.equal(
+    successorOf(`${START} w KQkq - 0 1`, boardOf(AFTER_E4)),
+    `${AFTER_E4} b KQkq e3 0 1`,
+    "e4 must be explained as exactly one legal move, with its target",
+  );
+  assert.equal(successorOf(`${START} w KQkq - 0 1`, boardOf(START)), null, "no move produces the same board");
+  assert.equal(
+    successorOf(`${START} w KQkq - 0 1`, boardOf("rnbqkbnr/pppppppp/8/8/4P3/8/PPPPPPPP/RNBQKBNR")),
+    null,
+    "a board with the mover still on its square is a frame, not a move",
+  );
+  assert.equal(successorOf(`${START} w KQkq - 0 1`, threeKnights), null, "a duplicated piece explains nothing");
+  assert.equal(
+    successorOf("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1", boardOf("r3k2r/8/8/8/8/8/8/R4RK1")),
+    "r3k2r/8/8/8/8/8/8/R4RK1 b kq - 1 1",
+    "castling carries the rook and drops both rights",
+  );
+  assert.equal(
+    successorOf("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 2", boardOf("rnbqkbnr/ppp1pppp/3P4/8/8/8/PPPP1PPP/RNBQKBNR")),
+    "rnbqkbnr/ppp1pppp/3P4/8/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2",
+    "en passant is explained from the target, not guessed from placement",
+  );
 
   // A navigation jump changes too much to be a move.
   const other = fenPieces(CASTLED).reduce((acc, p) => {
@@ -587,11 +632,135 @@ async function runBrowserChecks({ csp }) {
       }
       nodes[1].querySelector(".node-highlight-content").classList.add("selected");
     });
-    await waitFen(listPage, `${AFTER_E4_E5_NF3} w KQkq - 0 1`);
+    await waitFen(listPage, `${AFTER_E4_E5_NF3} w KQkq - 0 2`);
     console.log(`[${label}] move list turn: ok`);
     await listPage.close();
 
-    // 11. autoplay geometry: the coordinates the harness computes have to land
+    // 11. fast controls. The move list and the pieces are updated by separate
+    //     code paths on the page, so in a bullet game one is routinely a frame
+    //     ahead of the other. A changed board is only a new position if exactly
+    //     one legal move explains it; anything else has to be held, never
+    //     guessed. These are the four races that produced wrong FENs.
+    const cls = sq => `square-${(sq % 8) + 1}${((sq / 8) | 0) + 1}`;
+    // Apply one or more moves to the fixture board in a single mutation batch,
+    // the way a page that skipped a tick leaves the DOM.
+    const domMoves = (page, pairs, { duplicate = false } = {}) =>
+      page.evaluate(
+        ({ pairs, duplicate }) => {
+          const board = document.querySelector("wc-chess-board");
+          const cls = sq => `square-${(sq % 8) + 1}${((sq / 8) | 0) + 1}`;
+          for (const [from, to] of pairs) {
+            const piece = board.querySelector(`.piece.${cls(from)}`);
+            if (!piece) throw new Error(`no piece on ${from}`);
+            if (duplicate) {
+              // A frame in flight draws the piece twice: keep the original and
+              // add a copy on the destination.
+              const copy = piece.cloneNode(true);
+              copy.classList.remove(cls(from));
+              copy.classList.add(cls(to));
+              board.appendChild(copy);
+              continue;
+            }
+            board.querySelector(`.piece.${cls(to)}`)?.remove();
+            piece.classList.remove(cls(from));
+            piece.classList.add(cls(to));
+          }
+          if (duplicate) return;
+          for (const e of board.querySelectorAll(".highlight")) e.classList.remove("highlight");
+          for (const sq of pairs[pairs.length - 1]) {
+            const d = document.createElement("div");
+            d.className = `highlight ${cls(sq)}`;
+            board.appendChild(d);
+          }
+        },
+        { pairs, duplicate },
+      );
+    const domMove = (page, from, to, opts) => domMoves(page, [[from, to]], opts);
+    const addNode = (page, san, index) =>
+      page.evaluate(
+        ({ san, index }) => {
+          const list = document.querySelector("wc-move-list");
+          const div = document.createElement("div");
+          div.setAttribute("data-node", `0-${index}`);
+          div.className = `node ${index % 2 === 0 ? "white" : "black"}-move main-line-ply`;
+          div.innerHTML = `<span class="node-highlight-content">${san}</span>`;
+          list.appendChild(div);
+        },
+        { san, index },
+      );
+    const fenStays = async (page, expected, ms = 700) => {
+      const end = Date.now() + ms;
+      while (Date.now() < end) {
+        const p = await readPanel(page);
+        assert.equal(p.fen, expected, "an unexplained board must not become the position");
+        await new Promise(r => setTimeout(r, 60));
+      }
+    };
+
+    // 11a. board ahead of the list: the pieces moved, the list has not. The
+    //      board is one legal move from the last position, so it is adopted at
+    //      once, with the en passant target the move really creates.
+    const fastPage = await browser.newPage();
+    await fastPage.goto(`http://127.0.0.1:${PORT}/?board=${encodeURIComponent(START)}`, {
+      waitUntil: "load",
+    });
+    await waitFen(fastPage, `${START} w KQkq - 0 1`);
+    await domMove(fastPage, squareIndex("e2"), squareIndex("e4"));
+    await waitFen(fastPage, `${AFTER_E4} b KQkq e3 0 1`);
+    console.log(`[${label}] board ahead of list: ok`);
+
+    // 11b. list ahead of the board: the same pieces, a list that has moved on.
+    //      Nothing may be re-read from the stale board, and the turn must not
+    //      flip until the pieces do.
+    await fastPage.goto(
+      `http://127.0.0.1:${PORT}/?board=${encodeURIComponent(AFTER_E4)}&moves=e4`,
+      { waitUntil: "load" },
+    );
+    await waitFen(fastPage, `${AFTER_E4} b KQkq - 0 1`);
+    await addNode(fastPage, "e5", 1);
+    await fenStays(fastPage, `${AFTER_E4} b KQkq - 0 1`);
+    await domMove(fastPage, squareIndex("e7"), squareIndex("e5"));
+    await waitFen(fastPage, `${AFTER_E4_E5} w KQkq e6 0 2`);
+    console.log(`[${label}] list ahead of board: ok`);
+
+    // 11c. a piece drawn on two squares mid-animation. It is not a legal move,
+    //      and no amount of waiting makes it one, so the panel keeps the last
+    //      good position until the animation finishes.
+    const dupBoard = "rnbqkbnr/ppp1pppp/8/3P4/8/8/PPPP1PPP/RNBQKBNR";
+    const dupAfter = "r1bqkbnr/ppp1pppp/2n5/3P4/8/8/PPPP1PPP/RNBQKBNR";
+    await fastPage.goto(
+      `http://127.0.0.1:${PORT}/?board=${encodeURIComponent(dupBoard)}&last=c4,d5`,
+      { waitUntil: "load" },
+    );
+    await waitFen(fastPage, `${dupBoard} b KQkq - 0 1`);
+    await domMove(fastPage, squareIndex("b8"), squareIndex("c6"), { duplicate: true });
+    await fenStays(fastPage, `${dupBoard} b KQkq - 0 1`, 900);
+    await fastPage.evaluate(sq => {
+      document.querySelector(`.piece.${sq}`)?.remove();
+    }, cls(squareIndex("b8")));
+    await waitFen(fastPage, `${dupAfter} w KQkq - 0 1`);
+    console.log(`[${label}] mid-animation duplicate: ok`);
+
+    // 11d. two moves between ticks. No single move explains the board, so it
+    //      has to hold until it has been read twice, then land on the position
+    //      the move list states — not on a half-applied one.
+    await fastPage.goto(
+      `http://127.0.0.1:${PORT}/?board=${encodeURIComponent(AFTER_E4)}&moves=e4`,
+      { waitUntil: "load" },
+    );
+    await waitFen(fastPage, `${AFTER_E4} b KQkq - 0 1`);
+    await addNode(fastPage, "e5", 1);
+    await addNode(fastPage, "Nf3", 2);
+    await domMoves(fastPage, [
+      [squareIndex("e7"), squareIndex("e5")],
+      [squareIndex("g1"), squareIndex("f3")],
+    ]);
+    await waitFen(fastPage, `${AFTER_E4_E5_NF3} b KQkq - 0 2`);
+    console.log(`[${label}] two moves in one tick: ok`);
+    await fastPage.close();
+
+
+    // 12. autoplay geometry: the coordinates the harness computes have to land
     //     on the squares it meant, under real browser input. Synthetic events
     //     can be swallowed by pointer capture; page.mouse goes through CDP.
     const autoPage = await browser.newPage();
@@ -660,7 +829,7 @@ async function runBrowserChecks({ csp }) {
     assert.match(bothRefused.note, /analysis only/);
     await autoPage.close();
 
-    // 12. the autoplay menu: it plays the move the panel is showing, disarming
+    // 13. the autoplay menu: it plays the move the panel is showing, disarming
     //     stops it, guide off refuses to arm, and a reload never inherits it.
     const menuPage = await browser.newPage();
     await menuPage.goto(`http://127.0.0.1:${PORT}/analysis?interactive=1`, { waitUntil: "load" });

@@ -35,16 +35,26 @@ appears in the top-right; drag it by the `⠿` handle.
   the last-move highlights, and the board's `flipped` class. If a build
   positions pieces with a CSS transform instead of a square class, both
   percentage and pixel offsets are understood.
-- Builds a FEN. Castling rights are tracked across moves: a king or rook that
-  leaves home loses them for good. They are inferred from placement only on the
-  first read or after a jump in the move list. En passant is set from a double
-  pawn push.
-- Side to move comes from the move list when the page has one: the `.selected`
-  node in `wc-move-list` states which ply is on the board and which side just
-  played it. Without a move list it falls back to two independent signals, the
-  piece diff between snapshots (a move changes at most three squares) and the
-  last-move highlight (the destination square holds the mover). If all of them
-  are ambiguous, use **flip**.
+- Builds a FEN. A changed board is only accepted when it is exactly one legal
+  move from the last accepted position: chess.js enumerates the moves and the
+  placement has to match one of them. A frame in flight — a piece drawn on two
+  squares, a capture whose victim has not been removed yet, two moves between
+  ticks — matches no single move, so it is held until the pieces settle. A late
+  position is better than a wrong one, which is what fast time controls used to
+  produce.
+- Castling rights are tracked across moves: a king or rook that leaves home
+  loses them for good. They are inferred from placement only on the first read
+  or after a jump in the move list. En passant is carried by the accepted move.
+- Side to move is the accepted move's own, so it cannot be inferred wrong on a
+  normal move. On a jump, the move list states it: the `.selected` node in
+  `wc-move-list` (or the last node in a live game) says which ply is on the board
+  and which side just played it. Without a move list, the piece diff between
+  snapshots and the last-move highlight are the two independent fallbacks.
+- The move list and the pieces are updated by separate code paths, so in a fast
+  game one is routinely a frame ahead of the other. If the list moves and the
+  pieces do not, the panel holds the last good read and waits for the board; if
+  the pieces move and the list lags, the move itself is adopted and the count
+  catches up on the next tick.
 - A last move marks **two** squares; selecting a piece marks **one**. A single
   highlight is therefore not read as a move — chess.com marks the selected piece
   with the same class, and treating that as a move flips the side to move on a
@@ -162,7 +172,12 @@ Stockfish. It checks the FEN, turn inference, move detection, manual flip,
 flipped boards, engine lines, the arrow chain (2 plies by default, 3 and 1 on
 request), play mode (four candidates, one picked row, the label, and the return
 to plain best), pinned lines, the move list (side to move and move number read
-from `wc-move-list`), and close/reopen. The autoplay geometry check drives a
+from `wc-move-list`), and close/reopen. Four fast-control races are checked
+separately: a board that moves before the list (adopted at once), a list that
+moves before the board (held, then adopted when the pieces follow), a piece
+drawn on two squares mid-animation (refused until the animation ends), and two
+moves between ticks (held, then landed on the final position the list states).
+The autoplay geometry check drives a
 fixture board with real browser input and asserts that the coordinates the
 harness computes land on the squares it meant, for both a click-move-click and
 a drag.
@@ -283,11 +298,13 @@ browser you already have open. It is manual, not part of `npm test`.
 - Castling rights are inferred from piece placement after a jump in the move
   list; a position reached by jumping back to a point after the king moved and
   returned can over-report them. Normal play tracks them exactly.
-- En passant is inferred from the last move. Jumping around the move list drops
+- En passant is carried by the accepted move. Jumping around the move list drops
   the target until the next move is played.
-- Side to move is read from the move list when the page has one. Without it, it
-  is inferred; after jumping around in the analysis move list, press **flip**
-  if it is wrong.
+- Side to move is the accepted move's own, or the move list's on a jump. With no
+  move list at all it is inferred from the diff and the highlight; press
+  **flip** if it is wrong. Without a list, an unexplained board is never
+  adopted, so a board that changes in a way no legal move explains stays on the
+  last good read until the page settles or navigates.
 - The lite engine is much weaker than full Stockfish, and runs without threads.
 - Only the top frame is scanned, and only one board (the largest visible).
 - Wayland/X11 are irrelevant here: everything is DOM, so it works on any OS
