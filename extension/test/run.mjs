@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 
 import { toFen, inferCastling, plausible } from "../src/fen.js";
 import { turnFromDiff, turnFromLastMove } from "../src/turn.js";
+import { Humanizer, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
 import { chesscomHtml, fenPieces, START, AFTER_E4, CASTLED } from "./fixtures.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +146,26 @@ async function setGuide(page, guide) {
   );
 }
 
+async function setPlay(page, mode) {
+  await page.evaluate(
+    panelEval(`s => { const sel = s.getElementById('play'); sel.value = '${mode}'; sel.dispatchEvent(new Event('change', { bubbles: true })); }`),
+  );
+}
+
+async function waitChosen(page, timeout = 60000) {
+  await page.waitForFunction(
+    () => {
+      const s = document.getElementById("chesscan-ext-root")?.shadowRoot;
+      if (!s) return false;
+      return (
+        s.querySelectorAll(".line.chosen").length === 1 &&
+        !s.getElementById("live").classList.contains("on")
+      );
+    },
+    { timeout },
+  );
+}
+
 async function applyMove(page, fromXY, toXY) {
   await page.evaluate(([from, to]) => {
     const el = document.querySelector(`wc-chess-board .piece.square-${from}`);
@@ -196,6 +217,67 @@ async function runBrowserChecks({ csp }) {
     await setGuide(page, "auto");
     await waitArrow(page, true);
     console.log(`[${label}] guide gating: ok`);
+
+    // 2b. human-like play mode: four candidates, exactly one highlighted pick
+    await setPlay(page, "club");
+    await waitChosen(page);
+    const hp = await page.evaluate(
+      panelEval(`s => ({
+        lines: s.querySelectorAll(".line:not(.placeholder)").length,
+        chosen: s.querySelectorAll(".line.chosen").length,
+        why: s.getElementById("why").textContent,
+        mode: s.getElementById("play").value,
+      })`),
+    );
+    assert.equal(hp.mode, "club");
+    assert.equal(hp.lines, 4, "play mode should widen the search to four candidates");
+    assert.equal(hp.chosen, 1);
+    assert.match(hp.why, /^(natural|slip|find|forced)$/);
+    await waitArrow(page, true);
+    console.log(`[${label}] play mode: ok (${hp.why})`);
+
+    await setPlay(page, "off");
+    await waitLines(page);
+    const off = await page.evaluate(
+      panelEval(`s => ({ lines: s.querySelectorAll(".line:not(.placeholder)").length, chosen: s.querySelectorAll(".line.chosen").length })`),
+    );
+    assert.equal(off.chosen, 0, "play off must go back to the plain engine best");
+    assert.equal(off.lines, 3);
+    console.log(`[${label}] play off: ok`);
+
+    // 2c. max: full engine strength — one line, no human pick
+    await setPlay(page, "max");
+    await page.waitForFunction(
+      () => {
+        const s = document.getElementById("chesscan-ext-root")?.shadowRoot;
+        if (!s) return false;
+        return (
+          s.querySelectorAll(".line:not(.placeholder)").length === 1 &&
+          s.getElementById("why").textContent === "max"
+        );
+      },
+      { timeout: 60000 },
+    );
+    const maxp = await page.evaluate(
+      panelEval(`s => ({ chosen: s.querySelectorAll(".line.chosen").length, lines: s.querySelectorAll(".line:not(.placeholder)").length })`),
+    );
+    assert.equal(maxp.lines, 1);
+    assert.equal(maxp.chosen, 0, "max must not pretend the move was chosen by a person");
+    await waitArrow(page, true);
+    console.log(`[${label}] max: ok`);
+
+    // 2d. solid: strong and consistent, but still an actual choice
+    await setPlay(page, "solid");
+    await waitChosen(page);
+    const sol = await page.evaluate(
+      panelEval(`s => ({ lines: s.querySelectorAll(".line:not(.placeholder)").length, why: s.getElementById("why").textContent })`),
+    );
+    assert.equal(sol.lines, 4);
+    assert.notEqual(sol.why, "slip", "solid has mistakes disabled");
+    console.log(`[${label}] solid: ok (${sol.why})`);
+
+    await setPlay(page, "off");
+    await waitLines(page);
 
     // 3. a move happens in the DOM -> turn flips without any site API
     await applyMove(page, "52", "54");
@@ -258,7 +340,100 @@ async function runBrowserChecks({ csp }) {
   }
 }
 
+// --- human-like move selection ----------------------------------------------
+
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function humanizeChecks() {
+  const mk = (vals, depth) =>
+    vals.map((v, i) => ({ multipv: i + 1, depth, score: { type: "cp", value: v }, pv: [`m${i}`] }));
+
+  // One candidate: nothing to humanise.
+  const solo = new Humanizer({ elo: 1200, rng: seeded(1) });
+  assert.equal(solo.choose(mk([40], 16), "w").reason, "forced");
+
+  // A move that looked fine at a glance and loses on reflection is a slip,
+  // and it must be picked when the mistake rate is pushed to 1.
+  const slip = new Humanizer({ elo: 1250, mistake: 1, brilliancy: 0, rng: seeded(2) });
+  slip.observe(mk([80, 30], 4), "w");
+  slip.observe(mk([80, -40], 16), "w");
+  const picked = slip.choose(mk([80, -40], 16), "w");
+  assert.equal(picked.uci, "m1");
+  assert.equal(picked.reason, "mistake");
+  assert.ok(picked.cpLoss > 0 && picked.cpLoss <= cpCeiling(1250));
+
+  // A move that looked unsound and wins deep is a find.
+  const find = new Humanizer({ elo: 1800, mistake: 0, brilliancy: 1, rng: seeded(3) });
+  find.observe(mk([120, -20], 4), "w");
+  find.observe(mk([60, 260], 16), "w");
+  assert.equal(find.choose(mk([60, 260], 16), "w").reason, "brilliant");
+
+  // Nobody of any rating throws away more than the ceiling, ever.
+  const casual = new Humanizer({ elo: 850, rng: seeded(4) });
+  const ceiling = cpCeiling(850);
+  let offBest = 0;
+  for (let i = 0; i < 5000; i++) {
+    casual.reset();
+    const deep = mk([40, 25, 5, -300], 16);
+    casual.observe(mk([40, 25, 5, -300], 4), "w");
+    casual.observe(deep, "w");
+    const p = casual.choose(deep, "w");
+    assert.ok(p.cpLoss <= ceiling + 1e-9, `cpLoss ${p.cpLoss} exceeds ceiling ${ceiling}`);
+    assert.notEqual(p.uci, "m3", "must not hang the position for no reason");
+    if (p.uci !== "m0") offBest++;
+  }
+  assert.ok(offBest > 0, "a casual player should not always play the engine move");
+
+  // Stronger players deviate less.
+  const master = new Humanizer({ elo: 2300, rng: seeded(5) });
+  let masterOff = 0;
+  for (let i = 0; i < 5000; i++) {
+    master.reset();
+    const deep = mk([40, 25, 5, -300], 16);
+    master.observe(mk([40, 25, 5, -300], 4), "w");
+    master.observe(deep, "w");
+    if (master.choose(deep, "w").uci !== "m0") masterOff++;
+  }
+  assert.ok(masterOff / 5000 < offBest / 5000, "master should stay closer to the truth");
+
+  // A solid profile: past its own ceiling never, a slip never.
+  const solid = new Humanizer({ ...SKILL.solid, rng: seeded(10) });
+  for (let i = 0; i < 3000; i++) {
+    solid.reset();
+    solid.observe(mk([40, -30, 90, -200], 4), "w");
+    solid.observe(mk([40, -30, 90, -200], 16), "w");
+    const p = solid.choose(mk([40, -30, 90, -200], 16), "w");
+    assert.ok(p.cpLoss <= 60 + 1e-9, `solid cpLoss ${p.cpLoss} exceeds 60`);
+    assert.notEqual(p.reason, "mistake", "solid profile must never slip");
+  }
+
+  // Deterministic under an injected rng.
+  const a = new Humanizer({ elo: 1400, rng: seeded(7) });
+  const b = new Humanizer({ elo: 1400, rng: seeded(7) });
+  const deep = mk([40, 25, 5], 16);
+  for (const m of [a, b]) {
+    m.observe(mk([40, 25, 5], 4), "w");
+    m.observe(deep, "w");
+  }
+  assert.equal(a.choose(deep, "w").uci, b.choose(deep, "w").uci);
+
+  const forced = thinkTime({ forced: true, rng: seeded(8) });
+  assert.ok(forced >= 200 && forced <= 500);
+  const thought = thinkTime({ elo: 1500, branching: 30, instability: 0.3, rng: seeded(9) });
+  assert.ok(thought >= 350 && thought <= 22000);
+  console.log("humanize: ok");
+}
+
 unitChecks();
+humanizeChecks();
 await runBrowserChecks({ csp: false });
 await runBrowserChecks({ csp: true });
 console.log("all checks passed");

@@ -87,6 +87,10 @@ export const CSS = `
   min-width: 44px; text-align: right;
 }
 .line.best .sc { color: #d7b061; }
+/* The move a human of the selected rating would actually play. */
+.line.chosen { border-left-color: #7fc8a9; background: rgba(127, 200, 169, 0.09); }
+.line.chosen .san { color: #eef1f2; }
+.line.chosen .sc { color: #7fc8a9; }
 .line.placeholder { color: #6d737c; grid-template-columns: 1fr; }
 
 .status { padding: 0 10px 7px; color: #d98c8c; font-size: 11px; }
@@ -108,6 +112,14 @@ export const CSS = `
   display: flex; align-items: center; gap: 2px;
   padding: 6px 8px;
   border-top: 1px solid #23262c;
+}
+.bar.sub { border-top: none; padding-top: 0; }
+.bar.sub .why {
+  margin-left: auto;
+  color: #7fc8a9;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: lowercase;
 }
 
 .btn {

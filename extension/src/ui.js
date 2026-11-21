@@ -1,6 +1,16 @@
 import { CSS } from "./ui.css.js";
 
 const DEPTHS = [12, 14, 16, 18, 20, 22];
+const PLAYS = [
+  ["off", "off"],
+  ["casual", "casual"],
+  ["club", "club"],
+  ["solid", "solid"],
+  ["strongClub", "strong"],
+  ["expert", "expert"],
+  ["master", "master"],
+  ["max", "max"],
+];
 const WIDTH = 318;
 
 // Static, compile-time markup: no page or user data is interpolated here.
@@ -25,6 +35,10 @@ const MARKUP = `
             <label class="depth">guide<select id="guide" aria-label="Best-move arrow guide" title="Whose moves the arrow guides"></select></label>
             <label class="depth">d<select id="depth" aria-label="Search depth"></select></label>
             <button class="btn" id="pause" aria-pressed="false" title="Pause analysis">pause</button>
+          </div>
+          <div class="bar sub">
+            <label class="depth">play<select id="play" aria-label="How human-like the suggested move should be" title="Pick moves the way a player of this rating would, or max for full engine strength"></select></label>
+            <span class="why" id="why" aria-live="polite"></span>
           </div>
         </div>
       </div>
@@ -74,6 +88,8 @@ export class Panel {
       turn: $("turn"),
       guide: $("guide"),
       depth: $("depth"),
+      play: $("play"),
+      why: $("why"),
       pause: $("pause"),
       collapse: $("collapse"),
       close: $("close"),
@@ -99,11 +115,19 @@ export class Panel {
       this.el.guide.appendChild(o);
     }
 
+    for (const [value, label] of PLAYS) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      this.el.play.appendChild(o);
+    }
+
     this.el.close.addEventListener("click", () => this.h.onClose());
     this.el.collapse.addEventListener("click", () => this.h.onCollapse());
     this.el.pill.addEventListener("click", () => this.h.onOpen());
     this.el.flip.addEventListener("click", () => this.h.onFlip());
     this.el.guide.addEventListener("change", () => this.h.onGuide(this.el.guide.value));
+    this.el.play.addEventListener("change", () => this.h.onPlay(this.el.play.value));
     this.el.pause.addEventListener("click", () => this.h.onPause());
     this.el.copy.addEventListener("click", () => this.h.onCopy(this.fen));
     this.el.depth.addEventListener("change", () => this.h.onDepth(Number(this.el.depth.value)));
@@ -193,6 +217,15 @@ export class Panel {
     this.el.guide.value = guide;
   }
 
+  setPlayMode(mode) {
+    this.el.play.value = mode || "off";
+  }
+
+  /** One word for why the highlighted move was picked. */
+  setPlay(word) {
+    this.el.why.textContent = word || "";
+  }
+
   setPaused(paused) {
     this.el.pause.setAttribute("aria-pressed", paused ? "true" : "false");
     this.el.pause.textContent = paused ? "resume" : "pause";
@@ -223,7 +256,7 @@ export class Panel {
     this.setSearching(false);
   }
 
-  /** rows: [{ san, score, best }] with score already in white's view; whiteWin 0..1 */
+  /** rows: [{ san, score, chosen, note }] with score already in white's view; whiteWin 0..1 */
   setAnalysis(rows, whiteWin) {
     if (whiteWin === null || whiteWin === undefined) {
       this.el.prob.textContent = "\u2014";
@@ -247,8 +280,9 @@ export class Panel {
     const frag = document.createDocumentFragment();
     rows.forEach((row, i) => {
       const li = document.createElement("li");
-      li.className = `line${i === 0 ? " best" : ""}`;
+      li.className = `line${i === 0 ? " best" : ""}${row.chosen ? " chosen" : ""}`;
       li.dataset.san = row.san;
+      if (row.chosen && row.note) li.title = `picked: ${row.note}`;
       const san = document.createElement("span");
       san.className = "san";
       san.title = row.san;

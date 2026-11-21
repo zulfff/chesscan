@@ -11,6 +11,8 @@ that is cheating, and every site will ban you for it.
 A separate, self-contained extension lives in `extension/`. It reads the board
 straight from the chess.com DOM, runs Stockfish WASM locally and shows the same
 eval/win% panel with a best-move arrow — no screen capture, no calibration.
+A **play** selector can also pick the suggested move the way a player of a
+given rating would, rather than the way the engine would.
 See `extension/README.md`.
 
 ## Install on Fedora

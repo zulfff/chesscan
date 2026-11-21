@@ -7,11 +7,19 @@ import { toFen, plausible, FILES } from "./fen.js";
 import { turnFromDiff, turnFromLastMove } from "./turn.js";
 import { winProbability, whiteScore, formatScore } from "./engine.js";
 import { RemoteEngine } from "./remote-engine.js";
+import { Humanizer, SKILL } from "./humanize.js";
 import { Panel } from "./ui.js";
 
 const LOG = "[chesscan]";
 const ext = globalThis.browser ?? globalThis.chrome;
-const DEFAULTS = { depth: 18, guide: "auto", running: true, collapsed: false, pos: null };
+const DEFAULTS = {
+  depth: 18,
+  guide: "auto",
+  play: "off",
+  running: true,
+  collapsed: false,
+  pos: null,
+};
 
 const state = {
   settings: null,
@@ -26,6 +34,7 @@ const state = {
   searchGen: 0,
   lastUrl: location.href,
   userClosed: false,
+  human: null, // { fen, pick, model } for the position currently being played
 };
 
 // --- settings ---------------------------------------------------------------
@@ -237,16 +246,77 @@ engine.onError = err => {
   hideArrow();
 };
 
+// --- human-like move selection ---------------------------------------------
+
+// Four candidates, because a person is usually choosing between three or four
+// ideas, not the top three engine lines.
+const HUMAN_MULTIPV = 4;
+// Commit once the search has thought for a moment. Before that there is no
+// "glance" to compare against, and after it the arrow would keep twitching.
+const HUMAN_COMMIT_DEPTH = 8;
+// Full-strength mode: no humanizer, one line, the deepest the panel allows.
+const MAX_MULTIPV = 1;
+const MAX_DEPTH = 22;
+const REASON = { temperature: "natural", mistake: "slip", brilliant: "find", forced: "forced" };
+
+/** Full engine strength: MultiPV 1, no ceiling, no randomness. */
+function maxStrength() {
+  return (state.settings?.play ?? "off") === "max";
+}
+
+function humanSkill() {
+  const key = state.settings?.play ?? "off";
+  if (key === "off" || key === "max") return null;
+  return SKILL[key] ?? SKILL.club;
+}
+
+/** One model per position; it has to remember the shallow evaluations. */
+function humanModel(fen, skill) {
+  const h = state.human;
+  if (h && h.fen === fen && h.skill === skill) return h;
+  state.human = { fen, skill, pick: null, model: new Humanizer({ ...skill }) };
+  return state.human;
+}
+
+/** Returns the committed pick for this position, or null while it is still thinking. */
+function pickMove(lines, fen, turn) {
+  const skill = humanSkill();
+  if (!skill) return null;
+  const h = humanModel(fen, skill);
+  h.model.observe(lines, turn);
+  if (h.pick) return h.pick;
+
+  const depth = Math.max(0, ...lines.map(line => line.depth || 0));
+  if (depth < Math.min(HUMAN_COMMIT_DEPTH, state.settings.depth)) return null;
+  try {
+    h.pick = h.model.choose(lines, turn);
+  } catch (err) {
+    console.warn(LOG, "humanizer failed", err);
+    h.pick = null;
+  }
+  return h.pick;
+}
+
 function renderLines(lines, fen, turn) {
+  const pick = pickMove(lines, fen, turn);
   const rows = [];
   let win = null;
-  lines.slice(0, 3).forEach((line, i) => {
+  const count = maxStrength() ? MAX_MULTIPV : humanSkill() ? HUMAN_MULTIPV : 3;
+  lines.slice(0, count).forEach((line, i) => {
     const ws = whiteScore(line.score, turn);
     if (i === 0) win = winProbability(line.score, turn);
-    rows.push({ san: pvToSan(fen, line.pv) || line.pv.join(" "), score: formatScore(ws) });
+    const uci = line.pv?.[0] ?? null;
+    const chosen = !!pick && pick.uci === uci;
+    rows.push({
+      san: pvToSan(fen, line.pv) || line.pv.join(" "),
+      score: formatScore(ws),
+      chosen,
+      note: chosen ? REASON[pick.reason] ?? pick.reason : "",
+    });
   });
-  state.bestPv = lines[0]?.pv?.[0] ?? null;
+  state.bestPv = pick ? pick.uci : lines[0]?.pv?.[0] ?? null;
   panel.setAnalysis(rows, win);
+  panel.setPlay(pick ? REASON[pick.reason] ?? pick.reason : maxStrength() ? "max" : "");
   updateArrow();
 }
 
@@ -254,8 +324,8 @@ function analyze(fen, turn) {
   const gen = ++state.searchGen;
   panel.setSearching(true);
   engine.analyze(fen, {
-    depth: state.settings.depth,
-    multipv: 3,
+    depth: maxStrength() ? Math.max(state.settings.depth, MAX_DEPTH) : state.settings.depth,
+    multipv: maxStrength() ? MAX_MULTIPV : humanSkill() ? HUMAN_MULTIPV : 3,
     onLines: lines => {
       if (gen !== state.searchGen) return;
       renderLines(lines, fen, turn);
@@ -281,6 +351,7 @@ function resetForNavigation() {
   state.turn = "w";
   state.fen = null;
   state.bestPv = null;
+  state.human = null;
   state.searchGen++;
 }
 
@@ -295,6 +366,7 @@ function tick() {
     state.prevPieces = null;
     state.fen = null;
     state.bestPv = null;
+    state.human = null;
     engine.stop();
     hideArrow();
     panel.setSite("");
@@ -399,6 +471,14 @@ const panel = new Panel({
     saveSettings();
     updateArrow();
   },
+  onPlay(play) {
+    state.settings.play = play;
+    panel.setPlayMode(play);
+    saveSettings();
+    state.human = null;
+    state.fen = null;
+    tick();
+  },
   onPause() {
     state.settings.running = !state.settings.running;
     panel.setPaused(!state.settings.running);
@@ -457,6 +537,7 @@ async function boot() {
   panel.mount();
   panel.setDepth(state.settings.depth);
   panel.setGuide(state.settings.guide);
+  panel.setPlayMode(state.settings.play);
   panel.setPaused(!state.settings.running);
   panel.setCollapsed(state.settings.collapsed);
   panel.pos = state.settings.pos;

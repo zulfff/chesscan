@@ -41,9 +41,48 @@ appears in the top-right; drag it by the `⠿` handle.
   MultiPV 3. Depth is adjustable 12–22.
 - Draws the best move as an arrow over the board, and the panel can be
   collapsed, closed (a pill reopens it), paused, or pointed at another depth.
+- **play** selector: picks the move the way a player of a given rating would,
+  instead of the way the engine would (see below).
 
 Win probability is Lichess' fitted logistic curve on centipawns, so `+0.3`
 reads as ~53% instead of "winning".
+
+## Human-like moves
+
+`src/humanize.js` turns a MultiPV search into a move choice, so the arrow (and
+the highlighted line) suggests something a person would actually play rather
+than the engine's first choice. Set **play** to `off`, `casual` (~850),
+`club` (~1250), `solid` (~1750 with a fixed 60 cp ceiling and no slips),
+`strong` (~1650), `expert` (~2000), `master` (~2300), or `max`.
+
+`max` is the one mode that is not human-like: it skips the humanizer entirely,
+runs MultiPV 1 at depth 22, and simply follows the engine. Use it when the
+point is strength, not realism.
+
+Three mechanisms, all driven by the same streamed search:
+
+- **Temperature.** Candidates are weighted `exp(-Δ / T)` on win-probability
+  loss, with `T` falling as rating rises. A 1250 genuinely considers a move
+  0.3 pawns worse than the best one; a 2300 mostly does not.
+- **First glance versus reflection.** The same MultiPV slot is re-emitted at
+  every depth, so the module keeps each move's depth 2–6 evaluation and its
+  final one. Good-at-a-glance and bad-on-reflection is a mistake a human makes,
+  and it is played at a rating-scaled rate. The reverse — looked unsound,
+  turns out best — is flagged as **find** and played sometimes.
+- **Style.** A small bias toward promotions and forcing moves, scaled by
+  aggression. It changes which equivalent move wins the roll, not whether a
+  good move wins.
+
+The pick is committed at depth 8 and then held for that position, so the arrow
+does not twitch. It is then marked `.chosen` in the panel with a one-word label:
+`natural`, `slip`, `find` or `forced`. Play mode runs the search at MultiPV 4
+and cuts off at a centipawn ceiling (180 at 800, 60 at 2400) so the "human"
+part comes from choosing between sound candidates, not from hanging pieces.
+`solid` overrides that curve with a flat 60 cp ceiling and disables the mistake
+path; `max` ignores the humanizer and reports `max` with no `.chosen` row.
+
+This is a play-style model. It is not an anti-detection layer, and it is not
+useful advice for rated games — see the note at the top.
 
 ## Architecture
 
@@ -75,7 +114,15 @@ node test/real-game.mjs 12        # manual: play 12 plies vs a chess.com bot
 `npm test` runs the extension against DOM fixtures modelled on chess.com, on
 both a permissive page and a page with `default-src 'self'`, using real
 Stockfish. It checks the FEN, turn inference, move detection, manual flip,
-flipped boards, engine lines, the arrow, and close/reopen.
+flipped boards, engine lines, the arrow, play mode (four candidates, one picked
+row, the label, and the return to plain best), and close/reopen.
+
+The humanizer is also unit-tested separately, seeded so the checks are
+deterministic: forced positions, a slip, a find, the centipawn ceiling, that a
+master deviates from the engine best less often than a casual player, and that
+`solid` never exceeds its 60 cp ceiling or reports a slip.
+`node ../tools/humanize-check.mjs` prints the whole distribution per rating
+against a few synthetic positions.
 
 `test/real-game.mjs` goes further: it starts a guest game against a chess.com
 bot, plays the moves by dragging on the board, and after every ply compares the
