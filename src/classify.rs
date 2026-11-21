@@ -206,18 +206,50 @@ pub fn nearest(d: &[f32], protos: &[Prototype]) -> (char, f32) {
     best
 }
 
-/// Nearest prototype. Returns '.' when the square is essentially blank or the
-/// best match is too far to trust (better to refuse than to hallucinate a queen).
+/// Best prototype, its distance, and the distance to the closest prototype with
+/// a *different* piece label.
+///
+/// Two clusters can legitimately carry the same label (the same piece on a
+/// highlighted and an unhighlighted square), so the runner-up has to skip those
+/// or every ordinary piece would look ambiguous.
+pub fn nearest_two(d: &[f32], protos: &[Prototype]) -> (char, f32, f32) {
+    let (piece, best) = nearest(d, protos);
+    let mut runner = f32::MAX;
+    for p in protos {
+        if p.piece == piece {
+            continue;
+        }
+        let dd = dist(d, &p.features);
+        if dd < runner {
+            runner = dd;
+        }
+    }
+    (piece, best, runner)
+}
+
+/// How much closer the winner must be than the nearest *different* piece before
+/// the read is trusted. Descriptors from real boards spread ~1.0 from their own
+/// prototype, while the closest distinct pair (rook/bishop) sits ~2.0 apart, so
+/// a 0.15 gap is comfortably below the noise and still catches the genuinely
+/// borderline square. When two pieces are this close the honest answer is `?`,
+/// not a coin flip that later reaches the engine as a queen.
+pub const AMBIGUITY_MARGIN: f32 = 0.15;
+
+/// Nearest prototype. Returns '.' when the square is essentially blank, or '?'
+/// when the best match is too far to trust or too close to a different piece.
+/// Better to refuse than to hallucinate a queen.
 pub fn classify(d: &[f32], protos: &[Prototype], max_dist: f32) -> char {
     if ink_fraction(d) < EMPTY_INK {
         return '.';
     }
-    let (piece, dd) = nearest(d, protos);
+    let (piece, dd, runner) = nearest_two(d, protos);
     if dd > max_dist {
-        '?'
-    } else {
-        piece
+        return '?';
     }
+    if runner - dd < AMBIGUITY_MARGIN {
+        return '?';
+    }
+    piece
 }
 
 // ---------------------------------------------------------------------------
@@ -281,4 +313,63 @@ pub fn kmeans(samples: &[Vec<f32>], k: usize, iters: usize) -> Vec<Vec<f32>> {
         }
     }
     centroids
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A descriptor with a fixed silhouette (ink = `shape`) and one ink colour.
+    fn desc(shape: f32, colour: f32) -> Vec<f32> {
+        let mut v = vec![0.0; DIMS];
+        for x in v.iter_mut().take(64) {
+            *x = shape;
+        }
+        for x in v.iter_mut().skip(64) {
+            *x = colour;
+        }
+        v
+    }
+
+    fn proto(piece: char, d: Vec<f32>) -> Prototype {
+        Prototype { piece, features: d }
+    }
+
+    #[test]
+    fn confident_read_is_kept() {
+        let protos = vec![proto('Q', desc(0.3, 0.5)), proto('n', desc(0.3, 0.9))];
+        assert_eq!(classify(&desc(0.3, 0.5), &protos, 1.05), 'Q');
+    }
+
+    #[test]
+    fn blank_square_is_empty() {
+        let protos = vec![proto('Q', desc(0.3, 0.5))];
+        assert_eq!(classify(&vec![0.0; DIMS], &protos, 1.05), '.');
+    }
+
+    #[test]
+    fn far_from_every_prototype_is_unknown() {
+        let protos = vec![proto('Q', desc(0.3, 0.5))];
+        assert_eq!(classify(&desc(0.3, 1.0), &protos, 0.2), '?');
+    }
+
+    #[test]
+    fn two_different_pieces_nearly_equidistant_is_unknown() {
+        // The descriptor sits between Q and n. Guessing here is exactly how a
+        // knight becomes a queen on a dark square.
+        let protos = vec![proto('Q', desc(0.3, 0.50)), proto('n', desc(0.3, 0.52))];
+        assert_eq!(classify(&desc(0.3, 0.51), &protos, 1.05), '?');
+    }
+
+    #[test]
+    fn duplicate_labels_do_not_count_as_ambiguity() {
+        // Two clusters for the same piece (normal and highlighted) must not
+        // veto the read just because they are close to each other.
+        let protos = vec![
+            proto('Q', desc(0.3, 0.50)),
+            proto('Q', desc(0.3, 0.505)),
+            proto('n', desc(0.3, 0.95)),
+        ];
+        assert_eq!(classify(&desc(0.3, 0.5), &protos, 1.05), 'Q');
+    }
 }

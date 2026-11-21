@@ -45,6 +45,9 @@ function parseInfo(line) {
       case "score": {
         const kind = tok[++i];
         const value = Number(tok[++i]);
+        // A truncated or malformed info line must not surface as "NaN" in the
+        // panel. No score is better than a fabricated one.
+        if (!Number.isFinite(value)) return null;
         if (kind === "cp") score = { type: "cp", value };
         else if (kind === "mate") score = { type: "mate", value };
         break;

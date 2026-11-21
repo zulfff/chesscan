@@ -1,6 +1,8 @@
 // FEN assembly from a 64-square snapshot. Board indices are 0 = a1, 63 = h8,
 // so index = rank * 8 + file with rank 0 being rank 1.
 
+import { Chess } from "chess.js";
+
 export const FILES = "abcdefgh";
 
 export const indexOf = (file, rank) => rank * 8 + file;
@@ -114,15 +116,65 @@ export function toFen(pieces, turn, { castling, enPassant = "-", fullmove = 1 } 
   return `${rows.join("/")} ${turn} ${rights || "-"} ${squareName(enPassant)} 0 ${fullmove}`;
 }
 
-/** Cheap sanity gates before handing a position to chess.js. */
+/**
+ * Cheap sanity gates before handing a position to chess.js.
+ *
+ * chess.js checks kings, back-rank pawns and the FEN shape; it does not check
+ * material counts or king adjacency. A half-rendered board can satisfy all of
+ * its rules and still be a position that cannot exist, so the counts and the
+ * adjacency test live here. Refusing a transient frame is cheap; analysing a
+ * board that was never on screen is not.
+ */
 export function plausible(pieces) {
+  if (!Array.isArray(pieces) || pieces.length !== 64) return false;
   let kings = 0;
-  let pawnsOnBackRank = false;
+  let wKing = -1;
+  let bKing = -1;
+  const pawns = { w: 0, b: 0 };
+  const total = { w: 0, b: 0 };
   for (let sq = 0; sq < 64; sq++) {
     const p = pieces[sq];
     if (!p) continue;
-    if (p.type === "k") kings++;
-    if (p.type === "p" && (rankOf(sq) === 0 || rankOf(sq) === 7)) pawnsOnBackRank = true;
+    if (p.color !== "w" && p.color !== "b") return false;
+    if (p.type === "k") {
+      kings++;
+      if (p.color === "w") wKing = sq;
+      else bKing = sq;
+    }
+    if (p.type === "p" && (rankOf(sq) === 0 || rankOf(sq) === 7)) return false;
+    if (p.type === "p") pawns[p.color]++;
+    total[p.color]++;
   }
-  return kings === 2 && !pawnsOnBackRank;
+  if (kings !== 2) return false;
+  if (pawns.w > 8 || pawns.b > 8) return false;
+  if (total.w > 16 || total.b > 16) return false;
+  // Kings can never stand on touching squares. This catches a mid-animation
+  // frame or a stale piece that the DOM has not cleaned up yet.
+  if (wKing >= 0 && bKing >= 0) {
+    const dx = Math.abs((wKing % 8) - (bKing % 8));
+    const dy = Math.abs(((wKing / 8) | 0) - ((bKing / 8) | 0));
+    if (dx <= 1 && dy <= 1) return false;
+  }
+  return true;
+}
+
+/**
+ * True when the side that is *not* to move is in check. That cannot happen in a
+ * legal game — it means the last "move" left the mover's own king attacked, or
+ * the snapshot mixes two positions. `chess.js` validates the FEN shape, kings
+ * and back-rank pawns, but not this, so ask it directly by flipping the side.
+ * The en passant square is dropped: it belongs to the real side to move and
+ * would be illegal after the flip.
+ */
+export function opponentInCheck(fen) {
+  const parts = String(fen || "").split(" ");
+  if (parts.length < 4 || (parts[1] !== "w" && parts[1] !== "b")) return false;
+  parts[1] = parts[1] === "w" ? "b" : "w";
+  parts[3] = "-";
+  try {
+    return new Chess(parts.join(" ")).isCheck();
+  } catch {
+    // Unparseable FENs are rejected by the caller's own construction check.
+    return false;
+  }
 }

@@ -190,6 +190,19 @@ one-pixel detection error cannot break prototype matching.
 Lichess' fitted logistic curve on centipawn eval, so +0.3 reads as ~53% instead
 of the fantasy "advantage" language engines use.
 
+### Refusing beats guessing
+
+A square the classifier is not sure about becomes `?`, and a board containing
+`?` never reaches the engine. The same gate rejects positions that cannot exist:
+more than eight pawns, more than sixteen pieces for one side, a pawn on a back
+rank, or two kings on touching squares. The browser extension also refuses a
+snapshot where the side that just moved is still in check. A skipped frame is
+always cheaper than analysis of a board that was never on screen.
+
+Engine output is guarded too: after a search is stopped, its trailing
+`info`/`bestmove` lines are drained before the next position is sent, so a line
+from the previous position cannot be reported as this one's best move.
+
 ## Known limits
 
 - Piece prototypes are stamped with a descriptor revision. When a build changes

@@ -7,7 +7,7 @@
  * Anything bigger than that is a navigation jump, not a move, and is ignored.
  */
 export function turnFromDiff(prev, curr) {
-  if (!prev || !curr || prev.length !== 64) return null;
+  if (!prev || !curr || prev.length !== 64 || curr.length !== 64) return null;
   const movers = [];
   let losses = 0;
   for (let sq = 0; sq < 64; sq++) {
