@@ -126,6 +126,15 @@ export const CSS = `
   letter-spacing: 0.04em;
   text-transform: lowercase;
 }
+.bar.auto { padding-top: 2px; }
+.autoinfo {
+  margin-left: auto;
+  color: #7fc8a9;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.autoinfo.stopped { color: #c98f7f; }
 
 .btn {
   appearance: none;

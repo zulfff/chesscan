@@ -8,12 +8,14 @@ import { cp, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { Chess } from "chess.js";
 
-import { toFen, inferCastling, updateCastling, plausible } from "../src/fen.js";
+import { toFen, inferCastling, updateCastling, plausible, opponentInCheck } from "../src/fen.js";
 import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "../src/turn.js";
 import { squareFromTransform } from "../src/boards/chesscom.js";
 import { Humanizer, Form, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
-import { chesscomHtml, fenPieces, START, AFTER_E4, AFTER_E4_E5_NF3, CASTLED } from "./fixtures.mjs";
+import { chesscomHtml, fenPieces, FIXTURE_JS, START, AFTER_E4, AFTER_E4_E5_NF3, CASTLED } from "./fixtures.mjs";
+import { squareCenter, parseUci, legalMove, dragMove, squareName, queenPicker, jitterPoint } from "../src/autoplay.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const extRoot = join(root, "..");
@@ -30,6 +32,42 @@ function unitChecks() {
   assert.equal(toFen(start, "w"), `${START} w KQkq - 0 1`);
   assert.equal(inferCastling(start), "KQkq");
   assert.ok(plausible(start));
+
+  // Material and king adjacency: chess.js does not check these, so a transient
+  // DOM state could otherwise be analysed as a position that cannot exist.
+  const ninePawns = new Array(64).fill(null);
+  for (let f = 0; f < 8; f++) ninePawns[8 + f] = { color: "w", type: "p" };
+  ninePawns[16] = { color: "w", type: "p" };
+  ninePawns[4] = { color: "w", type: "k" };
+  ninePawns[60] = { color: "b", type: "k" };
+  assert.ok(!plausible(ninePawns), "nine pawns must be rejected");
+
+  const adjacent = new Array(64).fill(null);
+  adjacent[4] = { color: "w", type: "k" };
+  adjacent[5] = { color: "b", type: "k" };
+  assert.ok(!plausible(adjacent), "adjacent kings must be rejected");
+
+  const tooMany = new Array(64).fill(null);
+  for (let i = 0; i < 16; i++) tooMany[i] = { color: "w", type: "q" };
+  tooMany[4] = { color: "w", type: "k" };
+  tooMany[20] = { color: "w", type: "p" };
+  tooMany[60] = { color: "b", type: "k" };
+  assert.ok(!plausible(tooMany), "seventeen white pieces must be rejected");
+
+  // A legal position never has the side that just moved still in check. This is
+  // the check chess.js does not perform, and it catches a stitched snapshot.
+  assert.equal(opponentInCheck(`${START} w KQkq - 0 1`), false);
+  assert.equal(opponentInCheck(`${AFTER_E4} b KQkq e3 0 1`), false);
+  assert.equal(
+    opponentInCheck("4k3/8/8/8/8/8/4R3/4K3 w - - 0 1"),
+    true,
+    "non-mover in check must be refused",
+  );
+  assert.equal(
+    opponentInCheck("4k3/8/8/8/8/8/4R3/4K3 b - - 0 1"),
+    false,
+    "a check against the side to move is legal",
+  );
 
   const after = start.slice();
   after[12] = null;
@@ -86,6 +124,73 @@ function unitChecks() {
   const noKings = start.slice();
   noKings[4] = null;
   assert.ok(!plausible(noKings));
+
+  // Autoplay geometry: the harness clicks these coordinates, so they have to be
+  // the square centres in both orientations.
+  const rect = { left: 100, top: 50, width: 480, height: 480 };
+  assert.deepEqual(squareCenter(rect, false, 12), { x: 370, y: 440 }); // e2
+  assert.deepEqual(squareCenter(rect, false, 0), { x: 130, y: 500 }); // a1
+  assert.deepEqual(squareCenter(rect, true, 12), { x: 310, y: 140 }); // e2 flipped
+  assert.deepEqual(squareCenter(rect, true, 63), { x: 130, y: 500 }); // h8 flipped
+  assert.equal(squareCenter(rect, false, 64), null);
+
+  assert.deepEqual(parseUci("e2e4"), { from: 12, to: 28, promotion: null });
+  assert.deepEqual(parseUci("e7e8q"), { from: 52, to: 60, promotion: "q" });
+  assert.equal(parseUci("e2e"), null);
+  assert.equal(parseUci("z2e4"), null);
+  assert.equal(parseUci("e2e4x"), null, "bogus promotion piece must be refused");
+  assert.equal(squareName(12), "e2");
+  assert.equal(squareName(63), "h8");
+
+  // Legality: the last gate before a click, which cannot be undone.
+  assert.equal(legalMove(`${START} w KQkq - 0 1`, "e2e4").san, "e4");
+  assert.equal(legalMove(`${START} w KQkq - 0 1`, "e2e5"), null, "three-square pawn push");
+  assert.equal(legalMove(`${START} b KQkq - 0 1`, "e2e4"), null, "white move on black's turn");
+  assert.match(legalMove("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7a8q").san, /^a8=Q/);
+  assert.equal(legalMove("4k3/P7/8/8/8/8/8/4K3 w - - 0 1", "a7a8"), null, "promotion without a piece");
+  assert.equal(legalMove("not a fen", "e2e4"), null);
+
+  // The promotion picker, as chess.com actually renders it: the colour is part
+  // of the piece class, so the queen is "wq"/"bq", never a bare "q".
+  const pickerDoc = classes => ({
+    querySelectorAll: () =>
+      classes.map((c, i) => ({
+        className: c,
+        getBoundingClientRect: () => ({ left: i * 20, top: 40, width: 20, height: 20 }),
+      })),
+  });
+  const whitePicker = ["promotion-window top", "promotion-piece wb", "promotion-piece wn", "promotion-piece wq", "promotion-piece wr"];
+  const blackPicker = ["promotion-window bottom", "promotion-piece bb", "promotion-piece bn", "promotion-piece bq", "promotion-piece br"];
+  assert.equal(queenPicker(pickerDoc(whitePicker)).el.className, "promotion-piece wq");
+  assert.equal(queenPicker(pickerDoc(blackPicker)).el.className, "promotion-piece bq");
+  assert.deepEqual(
+    { x: queenPicker(pickerDoc(whitePicker)).x, y: queenPicker(pickerDoc(whitePicker)).y },
+    { x: 70, y: 50 },
+  );
+  assert.equal(queenPicker(pickerDoc(["promotion-window top"])), null, "no queen, no click");
+  const hiddenPicker = {
+    querySelectorAll: () => [
+      { className: "promotion-piece wq", getBoundingClientRect: () => ({ left: 0, top: 0, width: 0, height: 0 }) },
+    ],
+  };
+  assert.equal(queenPicker(hiddenPicker), null, "a zero-size piece is not a picker you can click");
+
+  // The landing point is off-centre but never outside the square it names.
+  for (const flip of [false, true]) {
+    for (const rng of [() => 0, () => 0.999999, Math.random]) {
+      for (let sq = 0; sq < 64; sq++) {
+        const p = jitterPoint(rect, flip, sq, rng);
+        const c = squareCenter(rect, flip, sq);
+        const half = rect.width / 16;
+        assert.ok(
+          Math.abs(p.x - c.x) < half && Math.abs(p.y - c.y) < half,
+          `jitter left square ${sq}`,
+        );
+      }
+    }
+  }
+  assert.equal(jitterPoint(rect, false, 64), null);
+
   console.log("unit: ok");
 }
 
@@ -104,19 +209,25 @@ async function prepareExtension() {
 function startServer({ csp }) {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${PORT}`);
+    if (url.pathname === "/fixture.js") {
+      res.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      res.end(FIXTURE_JS);
+      return;
+    }
     const board = url.searchParams.get("board") || START;
     const flipped = url.searchParams.get("flip") === "1";
     const last = (url.searchParams.get("last") || "").split(",").filter(Boolean);
     const moves = (url.searchParams.get("moves") || "").split(",").filter(Boolean);
     const sel = url.searchParams.get("sel");
     const selected = sel === null || sel === "" ? null : Number(sel);
+    const interactive = url.searchParams.get("interactive") === "1";
     const headers = { "content-type": "text/html; charset=utf-8" };
     if (csp) {
       headers["content-security-policy"] =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
     }
     res.writeHead(200, headers);
-    res.end(chesscomHtml(board, { flipped, last, moves, selected }));
+    res.end(chesscomHtml(board, { flipped, last, moves, selected, interactive }));
   });
   return new Promise(resolve => server.listen(PORT, "127.0.0.1", () => resolve(server)));
 }
@@ -479,6 +590,155 @@ async function runBrowserChecks({ csp }) {
     await waitFen(listPage, `${AFTER_E4_E5_NF3} w KQkq - 0 1`);
     console.log(`[${label}] move list turn: ok`);
     await listPage.close();
+
+    // 11. autoplay geometry: the coordinates the harness computes have to land
+    //     on the squares it meant, under real browser input. Synthetic events
+    //     can be swallowed by pointer capture; page.mouse goes through CDP.
+    const autoPage = await browser.newPage();
+    await autoPage.goto(`http://127.0.0.1:${PORT}/?interactive=1`, { waitUntil: "load" });
+    await waitFen(autoPage, `${START} w KQkq - 0 1`);
+    await waitLines(autoPage);
+    const geo = await autoPage.evaluate(() => {
+      const b = document.querySelector("wc-chess-board");
+      const r = b.getBoundingClientRect();
+      return {
+        rect: { left: r.left, top: r.top, width: r.width, height: r.height },
+        flipped: b.classList.contains("flipped"),
+      };
+    });
+    const e2 = squareCenter(geo.rect, geo.flipped, 12);
+    const e4 = squareCenter(geo.rect, geo.flipped, 28);
+
+    // Selecting a piece marks one square; a last move marks two. Reading a
+    // selection as a move invents a side-to-move change out of nothing.
+    const a1 = squareCenter(geo.rect, geo.flipped, 0);
+    await autoPage.mouse.click(a1.x, a1.y);
+    await new Promise(r => setTimeout(r, 1400));
+    const selected = await autoPage.evaluate(() => ({
+      marks: document.querySelectorAll("wc-chess-board .highlight").length,
+      fen: document.getElementById("chesscan-ext-root").shadowRoot.getElementById("fen").textContent,
+    }));
+    assert.equal(selected.marks, 1, "selecting a piece marks exactly one square");
+    assert.equal(
+      selected.fen,
+      `${START} w KQkq - 0 1`,
+      "a selection must not rewrite the position",
+    );
+    await autoPage.mouse.click(a1.x, a1.y); // deselect
+    await new Promise(r => setTimeout(r, 400));
+
+    await autoPage.mouse.click(e2.x, e2.y);
+    await autoPage.mouse.click(e4.x, e4.y);
+    await autoPage.waitForFunction(() => window.__applied?.length === 1, { timeout: 5000 });
+    const applied = await autoPage.evaluate(() => window.__applied[0]);
+    assert.deepEqual(
+      applied,
+      { from: { file: 4, rank: 1 }, to: { file: 4, rank: 3 } },
+      "the clicks must land on e2 then e4",
+    );
+    await waitFen(autoPage, `${AFTER_E4} b KQkq e3 0 1`);
+
+    // The same geometry has to work for a drag, which is the gesture the live
+    // board is actually driven with.
+    await dragMove(autoPage, geo.rect, geo.flipped, 11, 27); // d2-d4
+    await autoPage.waitForFunction(() => window.__applied?.length === 2, { timeout: 5000 });
+    const dragged = await autoPage.evaluate(() => window.__applied[1]);
+    assert.deepEqual(
+      dragged,
+      { from: { file: 3, rank: 1 }, to: { file: 3, rank: 3 } },
+      "the drag must start on d2 and end on d4",
+    );
+    console.log(`[${label}] autoplay geometry: ok`);
+
+    // guide "both" plays every move, so it is refused anywhere but analysis.
+    await setGuide(autoPage, "both");
+    await autoPage.evaluate(panelEval(`s => s.getElementById('auto').click()`));
+    const bothRefused = await autoPage.evaluate(
+      panelEval(`s => ({ on: s.getElementById('auto').getAttribute('aria-pressed'), note: s.getElementById('autoinfo').textContent })`),
+    );
+    assert.equal(bothRefused.on, "false", "guide both must not arm outside analysis");
+    assert.match(bothRefused.note, /analysis only/);
+    await autoPage.close();
+
+    // 12. the autoplay menu: it plays the move the panel is showing, disarming
+    //     stops it, guide off refuses to arm, and a reload never inherits it.
+    const menuPage = await browser.newPage();
+    await menuPage.goto(`http://127.0.0.1:${PORT}/analysis?interactive=1`, { waitUntil: "load" });
+    await waitFen(menuPage, `${START} w KQkq - 0 1`);
+    await waitLines(menuPage);
+    const autoState = () =>
+      menuPage.evaluate(
+        panelEval(`s => ({ on: s.getElementById('auto').getAttribute('aria-pressed'), note: s.getElementById('autoinfo').textContent })`),
+      );
+
+    await setGuide(menuPage, "off");
+    await menuPage.evaluate(panelEval(`s => s.getElementById('auto').click()`));
+    let auto = await autoState();
+    assert.equal(auto.on, "false", "guide off must refuse to arm");
+    assert.match(auto.note, /guide is off/);
+
+    // Both sides, so it keeps playing and disarming is observable.
+    await setGuide(menuPage, "both");
+    await waitLines(menuPage);
+    const playValue = () => menuPage.evaluate(panelEval(`s => s.getElementById('play').value`));
+    assert.equal(await playValue(), "off");
+    await menuPage.evaluate(panelEval(`s => s.getElementById('auto').click()`));
+    assert.equal((await autoState()).on, "true");
+    assert.equal(
+      await playValue(),
+      "auto",
+      "arming with no play profile must borrow a human one",
+    );
+    // The pause is a real think time now (log-normal, up to ~22s), not a fixed
+    // delay, so the budget has to cover the tail plus the search.
+    await menuPage.waitForFunction(() => window.__applied?.length >= 1, { timeout: 60000 });
+    const first = await menuPage.evaluate(() => window.__applied[0]);
+    const name = c => "abcdefgh"[c.file] + (c.rank + 1);
+    const uci = name(first.from) + name(first.to);
+    assert.ok(
+      legalMove(`${START} w KQkq - 0 1`, uci),
+      `autoplay played an illegal move: ${uci}`,
+    );
+    const why = await menuPage.evaluate(panelEval(`s => s.getElementById('why').textContent`));
+    assert.match(why, /^(natural|slip|find|forced)/, "the pick must come from the humanizer");
+    const replay = new Chess(`${START} w KQkq - 0 1`);
+    replay.move({ from: uci.slice(0, 2), to: uci.slice(2, 4) });
+    const wantFen = replay.fen().split(" ").slice(0, 2).join(" ");
+    await menuPage.waitForFunction(
+      w => {
+        const s = document.getElementById("chesscan-ext-root")?.shadowRoot;
+        return s && s.getElementById("fen").textContent.split(" ").slice(0, 2).join(" ") === w;
+      },
+      { timeout: 10000 },
+      wantFen,
+    );
+
+    await menuPage.waitForFunction(() => window.__applied?.length >= 2, { timeout: 60000 });
+    await menuPage.evaluate(panelEval(`s => s.getElementById('auto').click()`));
+    const stopped = await menuPage.evaluate(() => window.__applied.length);
+    await new Promise(r => setTimeout(r, 4000));
+    assert.equal(
+      await menuPage.evaluate(() => window.__applied.length),
+      stopped,
+      "disarming must stop the moves",
+    );
+    assert.equal((await autoState()).on, "false");
+    assert.equal(await playValue(), "off", "disarming must give the play mode back");
+
+    await menuPage.reload({ waitUntil: "load" });
+    await waitFen(menuPage, `${START} w KQkq - 0 1`);
+    assert.equal(
+      (await autoState()).on,
+      "false",
+      "a reload must never inherit an armed autoplay",
+    );
+    assert.equal(
+      await playValue(),
+      "off",
+      "the borrowed play mode must never reach storage",
+    );
+    console.log(`[${label}] autoplay menu: ok (${stopped} moves, then stopped)`);
+    await menuPage.close();
 
     await page.close();
     console.log(`[${label}] ALL PASS`);

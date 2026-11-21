@@ -8,7 +8,8 @@
   "scripts": {
     "build": "node build.mjs",
     "pack": "node build.mjs && cd build/chrome && zip -qr ../../chesscan-chrome.zip . && cd ../firefox && zip -qr ../../chesscan-firefox.zip .",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs",
+    "autoplay": "node tools/autoplay.mjs"
   },
   "dependencies": {
     "chess.js": "^1.4.0"

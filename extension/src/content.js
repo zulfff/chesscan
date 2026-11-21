@@ -3,11 +3,19 @@
 
 import { Chess } from "chess.js";
 import { readChesscom } from "./boards/chesscom.js";
-import { toFen, inferCastling, updateCastling, plausible, FILES } from "./fen.js";
+import {
+  toFen,
+  inferCastling,
+  updateCastling,
+  plausible,
+  opponentInCheck,
+  FILES,
+} from "./fen.js";
 import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "./turn.js";
 import { winProbability, whiteScore, formatScore } from "./engine.js";
 import { RemoteEngine } from "./remote-engine.js";
-import { Humanizer, Form, SKILL } from "./humanize.js";
+import { Humanizer, Form, SKILL, thinkTime } from "./humanize.js";
+import { legalMove, playMoveHuman, promoteQueen } from "./autoplay.js";
 import { Panel } from "./ui.js";
 
 const LOG = "[chesscan]";
@@ -43,7 +51,25 @@ const state = {
   ply: null, // zero-based ply from chess.com's move list
   linePick: null, // PV the user pinned by clicking a line
   lastRender: null, // { lines, fen, turn } from the last paint, for line clicks
+  settled: false, // the search finished; intermediate info lines are not a pick
+  // Autoplay. Deliberately not in settings: arming lives and dies with this
+  // page, so a reload, a navigation or a closed panel always leaves it off.
+  armed: false,
+  autoMoves: 0,
+  autoTimer: null,
+  autoWatch: null,
+  autoPromo: null,
+  autoBusy: false,
+  playedFor: null, // FEN a move was already dispatched for
+  autoPrevPlay: null, // play mode borrowed for the session, given back on disarm
+  positionAt: 0, // when the current position appeared: thinking starts here
+  lastMove: null, // highlighted squares of the move just played
 };
+
+// A testing harness, not a ladder bot: one arming plays at most this many moves.
+const AUTOPLAY_MAX_MOVES = 120;
+// How long to wait for the board to accept a dispatched move before giving up.
+const AUTOPLAY_ACCEPT_MS = 6000;
 
 // --- settings ---------------------------------------------------------------
 
@@ -72,7 +98,11 @@ async function loadSettings() {
 }
 
 function saveSettings() {
-  const value = { settings: state.settings };
+  // The play mode autoplay borrows is session-only, like the arming itself.
+  // Whatever else saves while it is borrowed must not persist it.
+  const settings =
+    state.autoPrevPlay !== null ? { ...state.settings, play: state.autoPrevPlay } : state.settings;
+  const value = { settings };
   try {
     const p = ext.storage.local.set(value);
     p?.catch?.(() => {});
@@ -239,18 +269,27 @@ function drawArrows(rect, moves, flipped) {
   layer.replaceChildren(svg);
 }
 
+/**
+ * The side the panel is guiding: "both" for every move, null when the guide is
+ * off. Autoplay plays exactly this side, so the arrow and the move always agree.
+ */
+function guidedSide() {
+  const guide = state.settings?.guide ?? "auto";
+  if (guide === "off") return null;
+  if (guide === "both") return "both";
+  // "auto" guides the side sitting at the bottom of the board: the player's
+  // own colour in a game, white on a spectator/analysis board.
+  return guide === "auto" ? (state.flipped ? "b" : "w") : guide === "white" ? "w" : "b";
+}
+
 function updateArrow() {
   const s = state.settings;
-  const guide = s?.guide ?? "auto";
-  if (!s?.running || guide === "off" || !state.rect || !state.pvUci?.length) {
+  const side = guidedSide();
+  if (!s?.running || side === null || !state.rect || !state.pvUci?.length) {
     hideArrow();
     return;
   }
-  // "auto" guides the side sitting at the bottom of the board: the player's
-  // own colour in a game, white on a spectator/analysis board.
-  const guideColor =
-    guide === "both" ? null : guide === "auto" ? (state.flipped ? "b" : "w") : guide === "white" ? "w" : "b";
-  if (guideColor && state.turn !== guideColor) {
+  if (side !== "both" && state.turn !== side) {
     hideArrow();
     return;
   }
@@ -387,10 +426,12 @@ function renderLines(lines, fen, turn) {
   if (why && pick && (state.settings?.play ?? "") === "auto" && elo) why += ` ${elo}`;
   panel.setPlay(why);
   updateArrow();
+  maybeAutoplay();
 }
 
 function analyze(fen, turn) {
   const gen = ++state.searchGen;
+  state.settled = false;
   panel.setSearching(true);
   engine.analyze(fen, {
     depth: maxStrength() ? Math.max(state.settings.depth, MAX_DEPTH) : state.settings.depth,
@@ -401,10 +442,251 @@ function analyze(fen, turn) {
     },
     onDone: lines => {
       if (gen !== state.searchGen) return;
+      state.settled = true;
       panel.setSearching(false);
       renderLines(lines, fen, turn);
     },
   });
+}
+
+// --- autoplay ---------------------------------------------------------------
+// Plays the move the panel is already showing, on the guided side only. Every
+// dispatch is re-checked against the FEN that was actually read, because a
+// click cannot be taken back and the board may have moved on since the search.
+
+/** Stop, and say why. Safe to call when already disarmed. */
+function disarm(note) {
+  clearTimeout(state.autoTimer);
+  clearInterval(state.autoWatch);
+  clearInterval(state.autoPromo);
+  state.autoTimer = null;
+  state.autoWatch = null;
+  state.autoPromo = null;
+  state.autoBusy = false;
+  state.playedFor = null;
+  const was = state.armed;
+  state.armed = false;
+  // Give back the play mode we borrowed, so disarming leaves the panel as it
+  // was found. No tick() here: disarm is called from inside tick.
+  if (state.autoPrevPlay !== null) {
+    state.settings.play = state.autoPrevPlay;
+    state.autoPrevPlay = null;
+    panel.setPlayMode(state.settings.play);
+    state.human = null;
+    state.form = null;
+    state.fen = null;
+  }
+  // Only speak up if it was actually running; a navigation should not leave a
+  // red note on a panel whose autoplay was never touched.
+  if (was) panel.setAutoplay(false, note || "");
+}
+
+function toggleAutoplay() {
+  if (state.armed) {
+    disarm("stopped");
+    return;
+  }
+  if (guidedSide() === null) {
+    panel.setAutoplay(false, "guide is off");
+    return;
+  }
+  // "both" plays every move, which on a real game means the opponent's too.
+  // It is for the analysis board, where there is no opponent.
+  if (guidedSide() === "both" && !/\/analysis/.test(location.pathname)) {
+    panel.setAutoplay(false, "guide both: analysis only");
+    return;
+  }
+  if (!state.settings.running) {
+    panel.setAutoplay(false, "paused");
+    return;
+  }
+  state.armed = true;
+  state.autoMoves = 0;
+  state.playedFor = null;
+
+  // Autoplay is a player, not an engine. With no play profile it would just
+  // relay Stockfish's best move, so borrow the wandering "auto" form for the
+  // session and hand it back on disarm.
+  if (!hasProfile()) {
+    state.autoPrevPlay = state.settings.play;
+    state.settings.play = "auto";
+    panel.setPlayMode("auto");
+    state.human = null;
+    state.form = null;
+    state.fen = null;
+    panel.setAutoplay(true, "humanized: auto");
+    tick();
+    return;
+  }
+  panel.setAutoplay(true, "armed");
+  // Arm means "start thinking now": force a fresh read and search so the first
+  // move comes from a current pick, not from whatever the panel last settled on
+  // while the page sat idle.
+  state.fen = null;
+  tick();
+}
+
+/**
+ * How long to sit before playing, in milliseconds.
+ *
+ * The humanizer's think time, fed the real position: how many legal moves there
+ * are, how close the candidates are, whether the move is forced or an obvious
+ * recapture. The search already burned part of that thought, so it is subtracted
+ * — the pause a person sees is the remainder, not the whole think on top.
+ */
+function autoplayDelay(fen, uci, lines, turn) {
+  let branching = 30;
+  let forced = false;
+  let recapture = false;
+  try {
+    const moves = new Chess(fen).moves({ verbose: true });
+    branching = moves.length || 30;
+    forced = moves.length === 1;
+    const mv = moves.find(m => m.lan === uci);
+    const toSq = uciSquare(uci, 2);
+    recapture = !!mv?.captured && toSq !== null && !!state.lastMove?.includes(toSq);
+  } catch {
+    /* an unreadable position is not a reason to invent a number */
+  }
+
+  // Close candidates are a real decision; a move that is clearly best is not.
+  let inst = 0;
+  const wins = (lines ?? [])
+    .map(l => winProbability(l.score, turn))
+    .filter(v => Number.isFinite(v))
+    .sort((a, b) => b - a);
+  if (wins.length >= 2) inst = Math.max(0, Math.min(1, 1 - (wins[0] - wins[1]) * 8));
+
+  const elo = state.human?.profile?.elo ?? 1400;
+  if (recapture) return Math.max(250, 380 + Math.random() * 520 - (Date.now() - state.positionAt));
+  let think = thinkTime({ elo, branching, instability: inst, forced });
+  // A find you did not see at first costs time; a slip is usually played
+  // quickly, because it looked right at a glance.
+  const reason = state.human?.fen === fen ? state.human.pick?.reason : null;
+  if (reason === "brilliant") think *= 1.5 + Math.random() * 0.5;
+  else if (reason === "mistake") think *= 0.7 + Math.random() * 0.3;
+  return Math.max(250, think - (Date.now() - state.positionAt));
+}
+
+/**
+ * Schedule one move, or do nothing. Called after every paint and on arming;
+ * every condition that would make a move wrong is a reason to wait, not to
+ * guess. Nothing here dispatches directly.
+ */
+function maybeAutoplay() {
+  if (!state.armed || state.autoBusy || state.autoTimer) return;
+  if (!state.settings?.running || document.hidden) return;
+  if (state.autoMoves >= AUTOPLAY_MAX_MOVES) {
+    disarm(`move cap ${AUTOPLAY_MAX_MOVES}`);
+    return;
+  }
+  const side = guidedSide();
+  if (side === null) {
+    disarm("guide is off");
+    return;
+  }
+  // Only a finished search is a decision. Intermediate info lines are still
+  // changing, and playing one would be playing a half-thought.
+  if (!state.settled) return;
+  if (side !== "both" && state.turn !== side) return;
+  const fen = state.fen;
+  if (!fen || state.playedFor === fen) return;
+  if (state.lastRender?.fen !== fen) return;
+  // Exactly the move the arrow draws: pinned line, humanized pick, or best.
+  const uci = state.pvUci?.[0];
+  if (!uci) return;
+  if (!legalMove(fen, uci)) {
+    disarm(`refused ${uci}: not legal here`);
+    return;
+  }
+  const delay = autoplayDelay(fen, uci, state.lastRender.lines, state.turn);
+  state.autoTimer = setTimeout(() => {
+    state.autoTimer = null;
+    dispatchAutoplay(fen, uci);
+  }, delay);
+  panel.setAutoplay(true, `${state.autoMoves} played`);
+}
+
+/** The one place that touches the board. */
+async function dispatchAutoplay(fen, uci) {
+  if (!state.armed || state.fen !== fen || state.playedFor === fen) return;
+  // Re-read the legality against the position on screen right now, not the one
+  // the search started from.
+  const mv = legalMove(fen, uci);
+  if (!mv) {
+    disarm(`refused ${uci}: not legal here`);
+    return;
+  }
+  if (!state.boardEl?.isConnected) {
+    disarm("board gone");
+    return;
+  }
+  const rect = state.boardEl.getBoundingClientRect();
+  if (!rect.width) {
+    disarm("board has no size");
+    return;
+  }
+
+  state.playedFor = fen;
+  state.autoBusy = true;
+  // People mix gestures, and reach further for a long move.
+  const dist = Math.max(
+    Math.abs((mv.from % 8) - (mv.to % 8)),
+    Math.abs(((mv.from / 8) | 0) - ((mv.to / 8) | 0)),
+  );
+  const mode = Math.random() < 0.2 + 0.06 * dist ? "drag" : "click";
+  const played = await playMoveHuman(document, state.boardEl, rect, state.flipped, mv, {
+    mode,
+    abort: () => !state.armed || state.fen !== fen,
+  });
+  if (!state.armed) return;
+  if (state.fen !== fen) {
+    // The position moved on mid-gesture. Drop it; the next read decides.
+    state.autoBusy = false;
+    state.playedFor = null;
+    return;
+  }
+  if (!played) {
+    state.autoBusy = false;
+    disarm("could not reach the board");
+    return;
+  }
+  if (mv.promotion) {
+    // The picker appears after the destination click, not necessarily at once.
+    // Offer the queen a few times, then let the accept watch decide.
+    let tries = 0;
+    state.autoPromo = setInterval(() => {
+      tries++;
+      if (!state.armed || promoteQueen(document, state.boardEl) || tries >= 6) {
+        clearInterval(state.autoPromo);
+        state.autoPromo = null;
+      }
+    }, 250);
+  }
+  panel.setAutoplay(true, `${mv.san}…`);
+
+  // The board has to actually change. If it does not, stop: retrying a move
+  // the site refused is how a harness plays garbage into a live game.
+  const deadline = Date.now() + AUTOPLAY_ACCEPT_MS;
+  state.autoWatch = setInterval(() => {
+    if (!state.armed) {
+      clearInterval(state.autoWatch);
+      state.autoWatch = null;
+      state.autoBusy = false;
+      return;
+    }
+    if (state.fen && state.fen !== fen) {
+      clearInterval(state.autoWatch);
+      clearInterval(state.autoPromo);
+      state.autoWatch = null;
+      state.autoPromo = null;
+      state.autoBusy = false;
+      state.autoMoves++;
+      panel.setAutoplay(true, `${state.autoMoves} played`);
+      return;
+    }
+    if (Date.now() > deadline) disarm("board did not accept the move");
+  }, 200);
 }
 
 // --- board loop -------------------------------------------------------------
@@ -425,6 +707,7 @@ function samePieces(a, b) {
 }
 
 function resetForNavigation() {
+  disarm("new page");
   state.lastUrl = location.href;
   state.prevPieces = null;
   state.manualTurn = null;
@@ -447,6 +730,7 @@ function tick() {
 
   const board = detect();
   if (!board) {
+    disarm("no board");
     state.rect = null;
     state.boardEl = null;
     state.prevPieces = null;
@@ -546,6 +830,15 @@ function tick() {
     }
   }
 
+  // A position where the side that just moved is still in check cannot occur.
+  // That is a snapshot of two positions stitched together (mid-animation, a
+  // stale piece the DOM has not removed), not a board. Refuse the frame rather
+  // than hand the engine a position that was never on screen.
+  if (opponentInCheck(fen)) {
+    refreshGeometry();
+    return;
+  }
+
   state.turn = turn;
   state.prevPieces = board.pieces;
   panel.setSite(board.site);
@@ -560,6 +853,13 @@ function tick() {
   state.linePick = null;
   state.lastRender = null;
   state.pvUci = null;
+  state.settled = false;
+  // A new position is a new decision; the old "already played" mark is void.
+  state.playedFor = null;
+  // The clock starts when the position appears, not when the search finishes:
+  // a person is already thinking while the engine is still looking.
+  state.positionAt = Date.now();
+  state.lastMove = board.lastMove ?? null;
   updateArrow();
 
   if (!state.settings.running) {
@@ -587,6 +887,7 @@ const observer = new MutationObserver(mutations => {
 
 const panel = new Panel({
   onClose() {
+    disarm("panel closed");
     state.userClosed = true;
     panel.hide();
     engine.stop();
@@ -612,7 +913,9 @@ const panel = new Panel({
     state.settings.guide = guide;
     panel.setGuide(guide);
     saveSettings();
+    if (state.armed && guidedSide() === null) disarm("guide is off");
     updateArrow();
+    maybeAutoplay();
   },
   onPlay(play) {
     state.settings.play = play;
@@ -647,10 +950,14 @@ const panel = new Panel({
       state.fen = null;
       tick();
     } else {
+      disarm("paused");
       engine.stop();
       hideArrow();
       panel.setStatus("Paused.");
     }
+  },
+  onAutoplay() {
+    toggleAutoplay();
   },
   onDepth(depth) {
     state.settings.depth = depth;
@@ -700,6 +1007,7 @@ async function boot() {
   panel.setPlayMode(state.settings.play);
   panel.setPv(state.settings.pv);
   panel.setPaused(!state.settings.running);
+  panel.setAutoplay(false, "");
   panel.setCollapsed(state.settings.collapsed);
   panel.pos = state.settings.pos;
   panel.place(panel.pos);
@@ -731,6 +1039,7 @@ async function boot() {
 
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
+      disarm("tab hidden");
       engine.stop();
       panel.setSearching(false);
     } else {

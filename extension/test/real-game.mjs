@@ -11,6 +11,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { enPassantFromDiff } from "../src/turn.js";
 import { inferCastling, updateCastling } from "../src/fen.js";
+import { dragMove } from "../src/autoplay.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -166,24 +167,8 @@ async function waitBoardChange(beforeKey, timeout = 25000) {
 
 async function drag(fromSq, toSq) {
   const state = await boardState();
-  const size = state.rect.width / 8;
-  const point = sq => {
-    const file = FILES.indexOf(sq[0]);
-    const rank = Number(sq[1]) - 1;
-    const col = state.flipped ? 7 - file : file;
-    const row = state.flipped ? rank : 7 - rank;
-    return {
-      x: state.rect.left + (col + 0.5) * size,
-      y: state.rect.top + (row + 0.5) * size,
-    };
-  };
-  const a = point(fromSq);
-  const b = point(toSq);
-  await page.mouse.move(a.x, a.y);
-  await page.mouse.down();
-  await page.mouse.move((a.x + b.x) / 2, (a.y + b.y) / 2, { steps: 4 });
-  await page.mouse.move(b.x, b.y, { steps: 8 });
-  await page.mouse.up();
+  const sq = s => (Number(s[1]) - 1) * 8 + FILES.indexOf(s[0]);
+  await dragMove(page, state.rect, state.flipped, sq(fromSq), sq(toSq));
 }
 
 async function waitExtensionFen(fen, timeout = 12000) {

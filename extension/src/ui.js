@@ -42,6 +42,10 @@ const MARKUP = `
             <label class="depth">pv<select id="pv" aria-label="How many plies of the suggested line to draw" title="How many plies of the suggested line to draw on the board"></select></label>
             <span class="why" id="why" aria-live="polite"></span>
           </div>
+          <div class="bar sub auto">
+            <button class="btn" id="auto" aria-pressed="false" title="Play the suggested move on the board, one move at a time. Testing only: off by default, never remembered, stops when you leave the page.">autoplay</button>
+            <span class="autoinfo" id="autoinfo" aria-live="polite"></span>
+          </div>
         </div>
       </div>
       <button class="pill" id="pill" hidden><span class="dot"></span>chesscan</button>
@@ -93,6 +97,8 @@ export class Panel {
       play: $("play"),
       pv: $("pv"),
       why: $("why"),
+      auto: $("auto"),
+      autoinfo: $("autoinfo"),
       pause: $("pause"),
       collapse: $("collapse"),
       close: $("close"),
@@ -140,6 +146,7 @@ export class Panel {
     this.el.play.addEventListener("change", () => this.h.onPlay(this.el.play.value));
     this.el.pv.addEventListener("change", () => this.h.onPv(Number(this.el.pv.value)));
     this.el.pause.addEventListener("click", () => this.h.onPause());
+    this.el.auto.addEventListener("click", () => this.h.onAutoplay());
     this.el.copy.addEventListener("click", () => this.h.onCopy(this.fen));
     this.el.depth.addEventListener("change", () => this.h.onDepth(Number(this.el.depth.value)));
     this.el.lines.addEventListener("click", ev => {
@@ -255,6 +262,14 @@ export class Panel {
     this.el.pause.setAttribute("aria-pressed", paused ? "true" : "false");
     this.el.pause.textContent = paused ? "resume" : "pause";
     if (paused) this.setSearching(false);
+  }
+
+  /** Autoplay is armed for this page only; `note` says what it is doing. */
+  setAutoplay(on, note) {
+    this.el.auto.setAttribute("aria-pressed", on ? "true" : "false");
+    this.el.auto.textContent = on ? "autoplay on" : "autoplay";
+    this.el.autoinfo.textContent = note || "";
+    this.el.autoinfo.classList.toggle("stopped", !on && !!note);
   }
 
   setSearching(on) {

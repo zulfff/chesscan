@@ -162,7 +162,10 @@ Stockfish. It checks the FEN, turn inference, move detection, manual flip,
 flipped boards, engine lines, the arrow chain (2 plies by default, 3 and 1 on
 request), play mode (four candidates, one picked row, the label, and the return
 to plain best), pinned lines, the move list (side to move and move number read
-from `wc-move-list`), and close/reopen.
+from `wc-move-list`), and close/reopen. The autoplay geometry check drives a
+fixture board with real browser input and asserts that the coordinates the
+harness computes land on the squares it meant, for both a click-move-click and
+a drag.
 
 The humanizer is also unit-tested separately, seeded so the checks are
 deterministic: forced positions, a slip, a find, the centipawn ceiling, that a
@@ -178,6 +181,101 @@ extension's FEN with an independent DOM read (and requires lines and an arrow).
 It was run for 12 plies with every position matching.
 
 Set `CHROMIUM=/path/to/chrome` if `chromium` is not in `PATH`.
+
+## Autoplay
+
+Two ways to run the same loop — read, search, pick, move, re-read — without a
+human clicking. Both are testing tools. Neither rematches, joins a game, or
+touches anything but the board in front of it.
+
+### The panel menu
+
+The `autoplay` button in the panel's bottom row plays the move the panel is
+already showing, on the guided side only. It plays as a person, not as an engine.
+
+**The move is humanized.** With no `play` profile set, arming borrows the
+wandering `auto` form for the session and gives it back on disarm — so the move
+is chosen by the humanizer (temperature, depth disagreement, style, the
+occasional plausible slip), not relayed from Stockfish's top line. The borrow is
+in memory only: it never reaches storage, so a reload always finds the `play`
+mode you actually chose. Set `play` to any rating to pin the strength instead.
+The panel's `why` word says which mechanism picked each move.
+
+**The timing is humanized.** The pause comes from the humanizer's think time,
+fed the real position: the number of legal moves, how close the top candidates
+are, whether the move is forced or an obvious recapture, and whether the pick
+was a slow find or a quick slip. It is log-normal, not a fixed delay, and the
+search's own duration is subtracted from it — a person is already thinking while
+the engine looks, so the wait you see is the remainder. Forced moves and
+recaptures are fast; murky positions take longer.
+
+**The hand is humanized.** The pointer travels in uneven steps along a slight
+arc, lands off-centre inside the square (never outside it), pauses between the
+two clicks, and mixes click-move-click with dragging — reaching for a drag more
+often on long moves. Both gestures are verified against the live board.
+
+And the guards, which are not negotiable:
+
+- **Off by default, never remembered.** Arming is not a setting: it lives in the
+  page's memory and dies with it. A reload, a navigation, a closed panel, a
+  paused search, a hidden tab or a lost board all disarm it.
+- **One move per position.** It waits for the search to finish, plays the exact
+  move the arrow draws (pinned line, humanized pick, or best), then waits for the
+  board to change before it will consider another.
+- **Legality is the last gate.** The move is re-checked with chess.js against the
+  FEN that was actually read, immediately before the click, and the gesture
+  aborts if the position changes under it mid-move. A click cannot be taken back.
+- **It stops instead of guessing.** If the board does not accept the move within
+  six seconds it disarms and says so. No blind retries.
+- **Capped.** 120 moves per arming.
+- `guide` decides the side: `auto`/`white`/`black` play that side only, `both`
+  plays each side in turn and is refused anywhere but `/analysis` (in a real
+  game it would play the opponent's moves), `off` refuses to arm.
+
+Promotion is answered by clicking the queen in chess.com's picker
+(`.promotion-piece.wq` / `.bq`).
+
+### The command-line harness
+
+`tools/autoplay.mjs` drives the same panel from outside, over CDP, with real
+browser input. Useful when you want a scripted run with a move budget.
+
+```bash
+# Chrome with the extension loaded and remote debugging on:
+chromium --remote-debugging-port=9222 --load-extension=build/chrome
+
+npm run autoplay -- --dry          # print the plan, click nothing
+npm run autoplay -- --moves=20     # play up to 20 of your moves
+```
+
+The extension is the brain: the script reads the chosen UCI and the FEN out of
+the panel and re-checks the move against that FEN before the mouse moves. Input
+goes in through CDP as a real drag, which does not depend on the site's
+click-to-move preference.
+
+Options: `--moves`, `--delay`, `--mode=click|drag` (drag is default),
+`--side=auto|w|b|both`, `--stall`, `--port`, `--timeout`. `--side=both` plays each
+side in turn and is refused anywhere but `/analysis` — in a real game it would
+play the opponent's moves. `--stall` (default 60 s) stops the loop when no move
+has been played for that long, so a finished game cannot spin forever.
+
+Use either on unrated games, against bots, or on the analysis board.
+
+### What has been verified live
+
+On chess.com/analysis, logged out:
+
+- The panel menu played `1.e4 c5 2.Nf3 d6` by itself; the site's own move list
+  read `e4 c5 Nf3 d6`, and disarming stopped it dead.
+- The harness played six plies, `1.e4 c5 2.Nf3 d6 3.d4 cxd4 4.Nxd4`, after which
+  the panel's FEN matched an independent chess.js replay exactly, including the
+  halfmove clock and fullmove number.
+- Synthetic click-move-click is accepted by the live board: it listens for
+  `pointerdown` on `wc-chess-board` and lets it bubble from whatever is on top of
+  the square.
+
+`node test/live-autoplay.mjs [moves]` repeats the panel-menu check against a
+browser you already have open. It is manual, not part of `npm test`.
 
 ## Limits
 
