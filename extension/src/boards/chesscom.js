@@ -130,10 +130,17 @@ export function readChesscom() {
     pieces[sq] = { color, type };
   }
 
+  // A last move marks two squares: where the piece left and where it landed.
+  // Clicking a piece to select it marks exactly one, and reading that as a move
+  // invents a side-to-move change out of a selection. One highlight is not a
+  // move, so it is not evidence of one.
+  const highlights = el.querySelectorAll(".highlight");
   const lastMove = [];
-  for (const hl of el.querySelectorAll(".highlight")) {
-    const sq = squareFromClasses(hl);
-    if (sq !== null) lastMove.push(sq);
+  if (highlights.length >= 2) {
+    for (const hl of highlights) {
+      const sq = squareFromClasses(hl);
+      if (sq !== null) lastMove.push(sq);
+    }
   }
 
   const moves = readMoveList(el) ?? { ply: null, turn: null };

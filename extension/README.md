@@ -45,6 +45,11 @@ appears in the top-right; drag it by the `⠿` handle.
   piece diff between snapshots (a move changes at most three squares) and the
   last-move highlight (the destination square holds the mover). If all of them
   are ambiguous, use **flip**.
+- A last move marks **two** squares; selecting a piece marks **one**. A single
+  highlight is therefore not read as a move — chess.com marks the selected piece
+  with the same class, and treating that as a move flips the side to move on a
+  board nobody touched. On top of that, the side to move is never allowed to
+  change while the pieces and the ply are unchanged: no move, no new turn.
 - The move list also gives the real move number, so the panel's SAN starts at
   the actual move instead of restarting at `1.` mid-game.
 - Clicking a line pins the arrow chain to that line; click it again to unpin.

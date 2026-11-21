@@ -499,6 +499,11 @@ function tick() {
   } else {
     turn = turnFromLastMove(board.pieces, board.lastMove) ?? state.turn ?? "w";
   }
+  // The side to move cannot change without a move. Same pieces, same ply, no
+  // manual flip: whatever the highlights say, it is still the same turn. This
+  // is the invariant behind the reader's two-highlight rule, checked again here
+  // so a single stray signal cannot rewrite the position.
+  if (keep && !state.manualTurn && state.prevPieces) turn = state.turn;
 
   // Rights and en passant cannot be read off a snapshot. A real move lets us
   // carry them forward exactly; a jump in the move list (or the first read)
