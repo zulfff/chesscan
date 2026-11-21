@@ -1,13 +1,13 @@
 // Entry point: find a board, turn it into a FEN, ask Stockfish, paint the panel.
-// Runs on lichess.org and chess.com; everything stays local to the browser.
+// Runs on chess.com; everything stays local to the browser.
 
 import { Chess } from "chess.js";
 import { readChesscom } from "./boards/chesscom.js";
-import { toFen, plausible, FILES } from "./fen.js";
-import { turnFromDiff, turnFromLastMove } from "./turn.js";
+import { toFen, inferCastling, updateCastling, plausible, FILES } from "./fen.js";
+import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "./turn.js";
 import { winProbability, whiteScore, formatScore } from "./engine.js";
 import { RemoteEngine } from "./remote-engine.js";
-import { Humanizer, SKILL } from "./humanize.js";
+import { Humanizer, Form, SKILL } from "./humanize.js";
 import { Panel } from "./ui.js";
 
 const LOG = "[chesscan]";
@@ -16,6 +16,7 @@ const DEFAULTS = {
   depth: 18,
   guide: "auto",
   play: "off",
+  pv: 2,
   running: true,
   collapsed: false,
   pos: null,
@@ -30,11 +31,18 @@ const state = {
   rect: null,
   flipped: false,
   boardEl: null,
-  bestPv: null,
+  pvUci: null,
   searchGen: 0,
   lastUrl: location.href,
   userClosed: false,
-  human: null, // { fen, pick, model } for the position currently being played
+  human: null, // { fen, profile, pick, model } for the position being played
+  form: null, // auto mode's session form, advanced once per position
+  castling: null, // tracked rights; inferred only on the first read or a jump
+  enPassant: null, // target square index after a double pawn push
+  engineError: null, // survives the tick loop until a search succeeds
+  ply: null, // zero-based ply from chess.com's move list
+  linePick: null, // PV the user pinned by clicking a line
+  lastRender: null, // { lines, fen, turn } from the last paint, for line clicks
 };
 
 // --- settings ---------------------------------------------------------------
@@ -113,7 +121,14 @@ function uciSquare(uci, offset) {
   return rank * 8 + file;
 }
 
-// --- best-move arrow --------------------------------------------------------
+// --- move arrows ------------------------------------------------------------
+// The top line is drawn as a chain, not a single pointer: your move, the reply
+// it invites, and the follow-up. Each ply is its own arrow, quieter and thinner
+// than the one before, so the chain reads as one idea instead of three hints.
+
+// Gold for the move you play, then cooler tones for the continuation.
+const PV_COLORS = ["#d7b061", "#7f9cc0", "#5a7183"];
+const PV_MAX = 3;
 
 let arrowHost = null;
 
@@ -132,13 +147,18 @@ function hideArrow() {
   if (arrowHost) arrowHost.style.display = "none";
 }
 
-function drawArrow(rect, from, to, flipped) {
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/**
+ * Draw the chain. `moves` is [{ from, to, color, opacity, scale }], in board
+ * square indices; anything with a bad square is dropped rather than drawn.
+ */
+function drawArrows(rect, moves, flipped) {
   const size = rect.width / 8;
-  if (!size || from === to) {
+  if (!size) {
     hideArrow();
     return;
   }
-  const layer = arrowLayer();
   const center = sq => {
     const file = sq % 8;
     const rank = (sq / 8) | 0;
@@ -146,68 +166,83 @@ function drawArrow(rect, from, to, flipped) {
     const row = flipped ? rank : 7 - rank;
     return [(col + 0.5) * size, (row + 0.5) * size];
   };
-  const [x1, y1] = center(from);
-  const [x2, y2] = center(to);
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const len = Math.hypot(dx, dy);
-  if (!len) {
+
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", String(rect.width));
+  svg.setAttribute("height", String(rect.height));
+  svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+  svg.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,.55))";
+
+  let drawn = 0;
+  for (const move of moves) {
+    const { from, to, color } = move;
+    if (from === null || to === null || from === to) continue;
+
+    const scale = move.scale ?? 1;
+    const [x1, y1] = center(from);
+    const [x2, y2] = center(to);
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const len = Math.hypot(dx, dy);
+    if (!len) continue;
+
+    const ux = dx / len;
+    const uy = dy / len;
+    const head = size * 0.36 * scale;
+    const half = size * 0.2 * scale;
+    const sx = x1 + ux * size * 0.18;
+    const sy = y1 + uy * size * 0.18;
+    const ex = x2 - ux * head * 0.9;
+    const ey = y2 - uy * head * 0.9;
+    const tipX = x2 - ux * head * 0.12;
+    const tipY = y2 - uy * head * 0.12;
+    const bx = tipX - ux * head;
+    const by = tipY - uy * head;
+    const px = -uy;
+    const py = ux;
+
+    const g = document.createElementNS(SVG_NS, "g");
+    g.setAttribute("opacity", String(move.opacity ?? 0.92));
+
+    const line = document.createElementNS(SVG_NS, "line");
+    line.setAttribute("x1", String(sx));
+    line.setAttribute("y1", String(sy));
+    line.setAttribute("x2", String(ex));
+    line.setAttribute("y2", String(ey));
+    line.setAttribute("stroke", color);
+    line.setAttribute("stroke-width", String(Math.max(3, size * 0.11 * scale)));
+    line.setAttribute("stroke-linecap", "round");
+
+    const headEl = document.createElementNS(SVG_NS, "polygon");
+    headEl.setAttribute(
+      "points",
+      `${tipX},${tipY} ${bx + px * half},${by + py * half} ${bx - px * half},${by - py * half}`,
+    );
+    headEl.setAttribute("fill", color);
+
+    g.append(line, headEl);
+    svg.append(g);
+    drawn++;
+  }
+
+  if (!drawn) {
     hideArrow();
     return;
   }
-  const ux = dx / len;
-  const uy = dy / len;
-  const head = size * 0.36;
-  const half = size * 0.2;
-  const sx = x1 + ux * size * 0.18;
-  const sy = y1 + uy * size * 0.18;
-  const ex = x2 - ux * head * 0.9;
-  const ey = y2 - uy * head * 0.9;
-  const tipX = x2 - ux * head * 0.12;
-  const tipY = y2 - uy * head * 0.12;
-  const bx = tipX - ux * head;
-  const by = tipY - uy * head;
-  const px = -uy;
-  const py = ux;
-  const width = Math.max(3, size * 0.11);
 
+  const layer = arrowLayer();
   layer.style.display = "block";
   layer.style.left = `${rect.left}px`;
   layer.style.top = `${rect.top}px`;
   layer.style.width = `${rect.width}px`;
   layer.style.height = `${rect.height}px`;
-
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", String(rect.width));
-  svg.setAttribute("height", String(rect.height));
-  svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
-  svg.style.filter = "drop-shadow(0 1px 2px rgba(0,0,0,.55))";
-  svg.style.opacity = ".92";
-
-  const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
-  line.setAttribute("x1", String(sx));
-  line.setAttribute("y1", String(sy));
-  line.setAttribute("x2", String(ex));
-  line.setAttribute("y2", String(ey));
-  line.setAttribute("stroke", "#d7b061");
-  line.setAttribute("stroke-width", String(width));
-  line.setAttribute("stroke-linecap", "round");
-
-  const headEl = document.createElementNS("http://www.w3.org/2000/svg", "polygon");
-  headEl.setAttribute(
-    "points",
-    `${tipX},${tipY} ${bx + px * half},${by + py * half} ${bx - px * half},${by - py * half}`,
-  );
-  headEl.setAttribute("fill", "#d7b061");
-
-  svg.append(line, headEl);
   layer.replaceChildren(svg);
 }
 
 function updateArrow() {
   const s = state.settings;
   const guide = s?.guide ?? "auto";
-  if (!s?.running || guide === "off" || !state.rect || !state.bestPv) {
+  if (!s?.running || guide === "off" || !state.rect || !state.pvUci?.length) {
     hideArrow();
     return;
   }
@@ -219,13 +254,16 @@ function updateArrow() {
     hideArrow();
     return;
   }
-  const from = uciSquare(state.bestPv, 0);
-  const to = uciSquare(state.bestPv, 2);
-  if (from === null || to === null) {
-    hideArrow();
-    return;
-  }
-  drawArrow(state.rect, from, to, state.flipped);
+
+  const plies = Math.max(1, Math.min(PV_MAX, Number(s.pv) || 1));
+  const moves = state.pvUci.slice(0, plies).map((uci, i) => ({
+    from: uciSquare(uci, 0),
+    to: uciSquare(uci, 2),
+    color: PV_COLORS[i],
+    opacity: i === 0 ? 0.94 : i === 1 ? 0.62 : 0.44,
+    scale: i === 0 ? 1 : 0.78,
+  }));
+  drawArrows(state.rect, moves, state.flipped);
 }
 
 function refreshGeometry() {
@@ -240,9 +278,10 @@ function refreshGeometry() {
 const engine = new RemoteEngine();
 engine.onError = err => {
   console.warn(LOG, "engine error", err);
-  panel.setStatus(`Engine failed to load: ${err.message}`);
+  state.engineError = `Engine failed to load: ${err.message}`;
+  panel.setStatus(state.engineError);
   panel.setSearching(false);
-  state.bestPv = null;
+  state.pvUci = null;
   hideArrow();
 };
 
@@ -254,6 +293,8 @@ const HUMAN_MULTIPV = 4;
 // Commit once the search has thought for a moment. Before that there is no
 // "glance" to compare against, and after it the arrow would keep twitching.
 const HUMAN_COMMIT_DEPTH = 8;
+// Auto mode's centre: the form wanders around this, not around a preset.
+const AUTO_BASE = 1500;
 // Full-strength mode: no humanizer, one line, the deepest the panel allows.
 const MAX_MULTIPV = 1;
 const MAX_DEPTH = 22;
@@ -264,25 +305,37 @@ function maxStrength() {
   return (state.settings?.play ?? "off") === "max";
 }
 
-function humanSkill() {
+/** True when the selector asks for a rating-driven pick at all. */
+function hasProfile() {
   const key = state.settings?.play ?? "off";
-  if (key === "off" || key === "max") return null;
-  return SKILL[key] ?? SKILL.club;
+  return key !== "off" && key !== "max";
 }
 
-/** One model per position; it has to remember the shallow evaluations. */
-function humanModel(fen, skill) {
+/**
+ * The model for this position. One per FEN, because it has to remember the
+ * shallow evaluations and the committed pick. In auto mode this is also where
+ * the session form takes its next step.
+ */
+function humanModel(fen) {
   const h = state.human;
-  if (h && h.fen === fen && h.skill === skill) return h;
-  state.human = { fen, skill, pick: null, model: new Humanizer({ ...skill }) };
+  if (h && h.fen === fen) return h;
+
+  const key = state.settings?.play ?? "off";
+  let profile;
+  if (key === "auto") {
+    if (!state.form) state.form = new Form({ base: AUTO_BASE });
+    profile = state.form.next();
+  } else {
+    profile = SKILL[key] ?? SKILL.club;
+  }
+  state.human = { fen, profile, pick: null, model: new Humanizer({ ...profile }) };
   return state.human;
 }
 
 /** Returns the committed pick for this position, or null while it is still thinking. */
 function pickMove(lines, fen, turn) {
-  const skill = humanSkill();
-  if (!skill) return null;
-  const h = humanModel(fen, skill);
+  if (!hasProfile()) return null;
+  const h = humanModel(fen);
   h.model.observe(lines, turn);
   if (h.pick) return h.pick;
 
@@ -298,25 +351,41 @@ function pickMove(lines, fen, turn) {
 }
 
 function renderLines(lines, fen, turn) {
+  state.engineError = null;
+  state.lastRender = { lines, fen, turn };
   const pick = pickMove(lines, fen, turn);
   const rows = [];
   let win = null;
-  const count = maxStrength() ? MAX_MULTIPV : humanSkill() ? HUMAN_MULTIPV : 3;
+  const count = maxStrength() ? MAX_MULTIPV : hasProfile() ? HUMAN_MULTIPV : 3;
   lines.slice(0, count).forEach((line, i) => {
     const ws = whiteScore(line.score, turn);
     if (i === 0) win = winProbability(line.score, turn);
     const uci = line.pv?.[0] ?? null;
     const chosen = !!pick && pick.uci === uci;
     rows.push({
+      uci,
       san: pvToSan(fen, line.pv) || line.pv.join(" "),
       score: formatScore(ws),
       chosen,
+      pinned: !!uci && uci === state.linePick,
       note: chosen ? REASON[pick.reason] ?? pick.reason : "",
     });
   });
-  state.bestPv = pick ? pick.uci : lines[0]?.pv?.[0] ?? null;
+  // A clicked line pins the arrow chain to that line until it is clicked again
+  // or the position changes. Otherwise follow the move actually being suggested,
+  // which is not necessarily the engine's first when a play profile picked it.
+  const pinned = state.linePick
+    ? lines.find(line => line.pv?.[0] === state.linePick)
+    : null;
+  const shown = pinned ?? (pick ? lines.find(line => line.pv?.[0] === pick.uci) ?? lines[0] : lines[0]);
+  state.pvUci = shown?.pv ?? null;
   panel.setAnalysis(rows, win);
-  panel.setPlay(pick ? REASON[pick.reason] ?? pick.reason : maxStrength() ? "max" : "");
+  // In auto mode show where the form sits right now; it is the whole point of
+  // the mode, and hiding it would just make the drift look like a bug.
+  let why = pick ? REASON[pick.reason] ?? pick.reason : maxStrength() ? "max" : "";
+  const elo = state.human?.profile?.elo;
+  if (why && pick && (state.settings?.play ?? "") === "auto" && elo) why += ` ${elo}`;
+  panel.setPlay(why);
   updateArrow();
 }
 
@@ -325,7 +394,7 @@ function analyze(fen, turn) {
   panel.setSearching(true);
   engine.analyze(fen, {
     depth: maxStrength() ? Math.max(state.settings.depth, MAX_DEPTH) : state.settings.depth,
-    multipv: maxStrength() ? MAX_MULTIPV : humanSkill() ? HUMAN_MULTIPV : 3,
+    multipv: maxStrength() ? MAX_MULTIPV : hasProfile() ? HUMAN_MULTIPV : 3,
     onLines: lines => {
       if (gen !== state.searchGen) return;
       renderLines(lines, fen, turn);
@@ -344,14 +413,31 @@ function detect() {
   return readChesscom();
 }
 
+function samePieces(a, b) {
+  if (!a || !b || a.length !== 64 || b.length !== 64) return false;
+  for (let i = 0; i < 64; i++) {
+    const p = a[i];
+    const q = b[i];
+    if (!p && !q) continue;
+    if (!p || !q || p.color !== q.color || p.type !== q.type) return false;
+  }
+  return true;
+}
+
 function resetForNavigation() {
   state.lastUrl = location.href;
   state.prevPieces = null;
   state.manualTurn = null;
   state.turn = "w";
   state.fen = null;
-  state.bestPv = null;
+  state.pvUci = null;
   state.human = null;
+  state.castling = null;
+  state.enPassant = null;
+  state.engineError = null;
+  state.ply = null;
+  state.linePick = null;
+  state.lastRender = null;
   state.searchGen++;
 }
 
@@ -365,8 +451,14 @@ function tick() {
     state.boardEl = null;
     state.prevPieces = null;
     state.fen = null;
-    state.bestPv = null;
+    state.pvUci = null;
     state.human = null;
+    state.castling = null;
+    state.enPassant = null;
+    state.engineError = null;
+    state.ply = null;
+    state.linePick = null;
+    state.lastRender = null;
     engine.stop();
     hideArrow();
     panel.setSite("");
@@ -387,28 +479,72 @@ function tick() {
   }
 
   const diff = turnFromDiff(state.prevPieces, board.pieces);
+  // The move list is the one signal chess.com states outright: which ply is on
+  // the board and which side just played it. When it is there, trust it over
+  // the two inferences.
+  const ply = Number.isInteger(board.ply) ? board.ply : null;
+  const step = ply !== null && state.ply !== null ? ply - state.ply : null;
+  const same = samePieces(state.prevPieces, board.pieces);
+  const realMove = step !== null ? step === 1 : !!diff;
+  const keep = step !== null ? step === 0 : !diff && same;
+
+  if (realMove) state.manualTurn = null;
   let turn;
-  if (diff) {
-    turn = diff;
-    state.manualTurn = null;
-  } else if (state.manualTurn) {
+  if (state.manualTurn) {
     turn = state.manualTurn;
+  } else if (board.moveTurn) {
+    turn = board.moveTurn;
+  } else if (diff) {
+    turn = diff;
   } else {
     turn = turnFromLastMove(board.pieces, board.lastMove) ?? state.turn ?? "w";
   }
 
-  const fen = toFen(board.pieces, turn);
+  // Rights and en passant cannot be read off a snapshot. A real move lets us
+  // carry them forward exactly; a jump in the move list (or the first read)
+  // falls back to placement and drops the en passant target.
+  let castling;
+  let enPassant;
+  if (realMove) {
+    castling = state.castling ?? inferCastling(state.prevPieces);
+    castling = updateCastling(castling, state.prevPieces, board.pieces);
+    enPassant = enPassantFromDiff(state.prevPieces, board.pieces);
+  } else if (keep) {
+    // A UI action (flip, play mode, depth) re-ticks the same board. Keep the
+    // tracked rights and target instead of inferring them away.
+    castling = state.castling ?? inferCastling(board.pieces);
+    enPassant = state.enPassant;
+  } else {
+    castling = inferCastling(board.pieces);
+    enPassant = null;
+  }
+  state.castling = castling;
+  state.enPassant = enPassant;
+  state.ply = ply;
+
+  // The move list knows the real move number, so SAN in the panel stops
+  // restarting at move 1 in the middle of a game.
+  const fullmove = ply !== null ? Math.floor(ply / 2) + 1 : 1;
+
+  let fen = toFen(board.pieces, turn, { castling, enPassant, fullmove });
   try {
     new Chess(fen);
   } catch {
-    refreshGeometry();
-    return;
+    // Flipping the side by hand can leave an en passant square that is illegal
+    // for the new side to move. Keep the position, drop the target.
+    fen = toFen(board.pieces, turn, { castling, enPassant: "-", fullmove });
+    try {
+      new Chess(fen);
+    } catch {
+      refreshGeometry();
+      return;
+    }
   }
 
   state.turn = turn;
   state.prevPieces = board.pieces;
   panel.setSite(board.site);
-  panel.setStatus(state.settings.running ? "" : "Paused.");
+  panel.setStatus(state.engineError || (state.settings.running ? "" : "Paused."));
   panel.setFen(fen, turn);
 
   if (fen === state.fen) {
@@ -416,7 +552,9 @@ function tick() {
     return;
   }
   state.fen = fen;
-  state.bestPv = null;
+  state.linePick = null;
+  state.lastRender = null;
+  state.pvUci = null;
   updateArrow();
 
   if (!state.settings.running) {
@@ -476,8 +614,25 @@ const panel = new Panel({
     panel.setPlayMode(play);
     saveSettings();
     state.human = null;
+    // Entering auto starts a fresh form; switching away forgets the old one.
+    state.form = null;
     state.fen = null;
     tick();
+  },
+  onPv(count) {
+    state.settings.pv = count;
+    panel.setPv(count);
+    saveSettings();
+    // Only the drawing changes; the line is already in hand.
+    updateArrow();
+  },
+  onLineClick(uci) {
+    if (!uci) return;
+    state.linePick = state.linePick === uci ? null : uci;
+    // Repaint from the lines already in hand so the arrow and the highlight
+    // move on the click, not on the next engine info line.
+    if (state.lastRender) renderLines(state.lastRender.lines, state.lastRender.fen, state.lastRender.turn);
+    else updateArrow();
   },
   onPause() {
     state.settings.running = !state.settings.running;
@@ -538,6 +693,7 @@ async function boot() {
   panel.setDepth(state.settings.depth);
   panel.setGuide(state.settings.guide);
   panel.setPlayMode(state.settings.play);
+  panel.setPv(state.settings.pv);
   panel.setPaused(!state.settings.running);
   panel.setCollapsed(state.settings.collapsed);
   panel.pos = state.settings.pos;

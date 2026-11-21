@@ -32,28 +32,66 @@ appears in the top-right; drag it by the `⠿` handle.
 ## What it does
 
 - Reads pieces from `wc-chess-board` (`.piece.<w|b><piece>.square-<file><rank>`),
-  the last-move highlights, and the board's `flipped` class.
-- Builds a FEN. Castling rights are inferred from king/rook home squares.
-- Side to move comes from two independent signals: the piece diff between
-  snapshots (a move changes at most three squares), and the last-move highlight
-  (the destination square holds the mover). If both are ambiguous, use **flip**.
+  the last-move highlights, and the board's `flipped` class. If a build
+  positions pieces with a CSS transform instead of a square class, both
+  percentage and pixel offsets are understood.
+- Builds a FEN. Castling rights are tracked across moves: a king or rook that
+  leaves home loses them for good. They are inferred from placement only on the
+  first read or after a jump in the move list. En passant is set from a double
+  pawn push.
+- Side to move comes from the move list when the page has one: the `.selected`
+  node in `wc-move-list` states which ply is on the board and which side just
+  played it. Without a move list it falls back to two independent signals, the
+  piece diff between snapshots (a move changes at most three squares) and the
+  last-move highlight (the destination square holds the mover). If all of them
+  are ambiguous, use **flip**.
+- The move list also gives the real move number, so the panel's SAN starts at
+  the actual move instead of restarting at `1.` mid-game.
+- Clicking a line pins the arrow chain to that line; click it again to unpin.
+  The pin follows the position and clears when the board changes.
 - Runs Stockfish 19 **lite, single-threaded** (1.8 MB WASM) at depth 18 with
   MultiPV 3. Depth is adjustable 12–22.
-- Draws the best move as an arrow over the board, and the panel can be
-  collapsed, closed (a pill reopens it), paused, or pointed at another depth.
+- Draws the suggested line as an arrow chain over the board — one ply, two, or
+  three (`pv` selector) — and the panel can be collapsed, closed (a pill reopens
+  it), paused, or pointed at another depth.
 - **play** selector: picks the move the way a player of a given rating would,
   instead of the way the engine would (see below).
 
 Win probability is Lichess' fitted logistic curve on centipawns, so `+0.3`
 reads as ~53% instead of "winning".
 
+## Arrow chain
+
+`pv` picks how much of the suggested line is drawn as arrows: `1` is just the
+move, `2` adds the reply it invites, `3` adds the follow-up. The first arrow is
+gold and full width; later plies are cooler, thinner and more transparent, so
+the chain reads as one idea instead of three competing hints.
+
+The chain follows the line actually being suggested. If a `play` profile picked
+something other than the engine's first move, the arrows come from *that*
+move's continuation — the reply you see is a reply to the move you would
+actually play, which is the only version that is useful for planning.
+
+Clicking any line pins the chain to it, which is handy for comparing candidate
+moves without losing the line you were looking at. Click the pinned line again
+to go back to the suggested one. A pin clears when the position changes.
+
 ## Human-like moves
 
 `src/humanize.js` turns a MultiPV search into a move choice, so the arrow (and
 the highlighted line) suggests something a person would actually play rather
-than the engine's first choice. Set **play** to `off`, `casual` (~850),
+than the engine's first choice. Set **play** to `off`, `auto`, `casual` (~850),
 `club` (~1250), `solid` (~1750 with a fixed 60 cp ceiling and no slips),
-`strong` (~1650), `expert` (~2000), `master` (~2300), or `max`.
+`strong club` (~1650), `expert` (~2000), `master` (~2300), or `max`.
+
+`auto` is the one profile without a fixed rating: a `Form` model starts the
+session somewhere near 1500, drifts while mean-reverting, and tilts for a few
+moves at a time. A session's low and high normal end up roughly 300 Elo apart,
+which is what an evening actually looks like — a stretch of 1700, a stretch of
+1250, then back. The readout shows the current form next to the pick, e.g.
+`natural 1534`, so the drift is visible instead of mysterious. Nothing about it
+is tuned for detection; it is a partner whose strength moves, which is what
+makes it useful for practice.
 
 `max` is the one mode that is not human-like: it skips the humanizer entirely,
 runs MultiPV 1 at depth 22, and simply follows the engine. Use it when the
@@ -79,7 +117,8 @@ does not twitch. It is then marked `.chosen` in the panel with a one-word label:
 and cuts off at a centipawn ceiling (180 at 800, 60 at 2400) so the "human"
 part comes from choosing between sound candidates, not from hanging pieces.
 `solid` overrides that curve with a flat 60 cp ceiling and disables the mistake
-path; `max` ignores the humanizer and reports `max` with no `.chosen` row.
+path; `max` ignores the humanizer and reports `max` with no `.chosen` row;
+`auto` recomputes the profile from the form model once per position.
 
 This is a play-style model. It is not an anti-detection layer, and it is not
 useful advice for rated games — see the note at the top.
@@ -108,19 +147,23 @@ analysis if the service worker is torn down mid-search.
 npm test                          # unit + fixture e2e in real Chromium (headless)
 node test/real-sites.mjs          # manual: real chess.com/analysis
 node test/real-move.mjs           # manual: drag e2-e4 on the real board
+node test/probe-movelist.mjs      # manual: dump the real move-list DOM
 node test/real-game.mjs 12        # manual: play 12 plies vs a chess.com bot
 ```
 
 `npm test` runs the extension against DOM fixtures modelled on chess.com, on
 both a permissive page and a page with `default-src 'self'`, using real
 Stockfish. It checks the FEN, turn inference, move detection, manual flip,
-flipped boards, engine lines, the arrow, play mode (four candidates, one picked
-row, the label, and the return to plain best), and close/reopen.
+flipped boards, engine lines, the arrow chain (2 plies by default, 3 and 1 on
+request), play mode (four candidates, one picked row, the label, and the return
+to plain best), pinned lines, the move list (side to move and move number read
+from `wc-move-list`), and close/reopen.
 
 The humanizer is also unit-tested separately, seeded so the checks are
 deterministic: forced positions, a slip, a find, the centipawn ceiling, that a
-master deviates from the engine best less often than a casual player, and that
-`solid` never exceeds its 60 cp ceiling or reports a slip.
+master deviates from the engine best less often than a casual player, that
+`solid` never exceeds its 60 cp ceiling or reports a slip, and that a form
+session stays in range, actually varies, and replays identically under a seed.
 `node ../tools/humanize-check.mjs` prints the whole distribution per rating
 against a few synthetic positions.
 
@@ -134,10 +177,14 @@ Set `CHROMIUM=/path/to/chrome` if `chromium` is not in `PATH`.
 ## Limits
 
 - chess.com only.
-- Castling rights are inferred from piece placement; a king that moved and came
-  back over-reports them. En passant is always `-`.
-- Side to move is inferred, not read. After jumping around in the analysis move
-  list, press **flip** if it is wrong.
+- Castling rights are inferred from piece placement after a jump in the move
+  list; a position reached by jumping back to a point after the king moved and
+  returned can over-report them. Normal play tracks them exactly.
+- En passant is inferred from the last move. Jumping around the move list drops
+  the target until the next move is played.
+- Side to move is read from the move list when the page has one. Without it, it
+  is inferred; after jumping around in the analysis move list, press **flip**
+  if it is wrong.
 - The lite engine is much weaker than full Stockfish, and runs without threads.
 - Only the top frame is scanned, and only one board (the largest visible).
 - Wayland/X11 are irrelevant here: everything is DOM, so it works on any OS

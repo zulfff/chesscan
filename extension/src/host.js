@@ -36,9 +36,13 @@ export function createEngineHost({ deliver }) {
     switch (msg.type) {
       case "chesscan:analyze": {
         const session = sessionFor(key);
-        if (session.jobId === msg.jobId || msg.seq <= session.seq) return;
+        const seq = Number.isFinite(msg.seq) ? msg.seq : null;
+        if (session.jobId === msg.jobId) return;
+        // Older clients do not send seq; do not let an undefined value poison
+        // the comparison or reject every later job.
+        if (seq !== null && seq <= session.seq) return;
         session.jobId = msg.jobId;
-        session.seq = msg.seq;
+        if (seq !== null) session.seq = seq;
         session.replyTab = msg.replyTab ?? null;
         session.engine.analyze(msg.fen, {
           depth: msg.depth,

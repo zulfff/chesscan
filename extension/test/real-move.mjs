@@ -3,7 +3,10 @@
 
 import puppeteer from "puppeteer-core";
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
+const here = dirname(fileURLToPath(import.meta.url));
 const dir = "/tmp/chesscan-real-move";
 await rm(dir, { recursive: true, force: true });
 await cp(new URL("../build/chrome", import.meta.url).pathname, dir, { recursive: true });
@@ -99,7 +102,7 @@ try {
 
   state = await page.evaluate(panel);
   console.log("settled:", JSON.stringify(state, null, 2));
-  await page.screenshot({ path: "/data/home/chesscan-check/real-move.png" });
+  await page.screenshot({ path: join(here, "real-move.png") });
 
   if (!state || !state.fen.startsWith("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b")) {
     console.error("FAIL: extension did not follow the move");

@@ -50,7 +50,10 @@ const EDGE_T: i32 = 22;
 /// horizontal grid lines.
 fn h_profile(g: &Gray) -> Vec<u32> {
     let mut prof = vec![0u32; g.h];
-    for y in 1..g.h - 1 {
+    for (y, slot) in prof.iter_mut().enumerate() {
+        if y == 0 || y >= g.h - 1 {
+            continue;
+        }
         let mut n = 0;
         for x in 1..g.w - 1 {
             let dy = g.at(x, y + 1) as i32 - g.at(x, y - 1) as i32;
@@ -58,7 +61,7 @@ fn h_profile(g: &Gray) -> Vec<u32> {
                 n += 1;
             }
         }
-        prof[y] = n;
+        *slot = n;
     }
     prof
 }
@@ -66,7 +69,10 @@ fn h_profile(g: &Gray) -> Vec<u32> {
 /// Per-column count of pixels on a horizontal colour change.
 fn v_profile(g: &Gray) -> Vec<u32> {
     let mut prof = vec![0u32; g.w];
-    for x in 1..g.w - 1 {
+    for (x, slot) in prof.iter_mut().enumerate() {
+        if x == 0 || x >= g.w - 1 {
+            continue;
+        }
         let mut n = 0;
         for y in 1..g.h - 1 {
             let dx = g.at(x + 1, y) as i32 - g.at(x - 1, y) as i32;
@@ -74,7 +80,7 @@ fn v_profile(g: &Gray) -> Vec<u32> {
                 n += 1;
             }
         }
-        prof[x] = n;
+        *slot = n;
     }
     prof
 }
@@ -169,7 +175,8 @@ pub fn two_tone(img: &RgbImage) -> (f32, f32) {
         let mut x = 0;
         while x < img.width() {
             let p = img.get_pixel(x, y);
-            let key = ((p[0] as usize >> 4) << 8) | ((p[1] as usize >> 4) << 4) | (p[2] as usize >> 4);
+            let key =
+                ((p[0] as usize >> 4) << 8) | ((p[1] as usize >> 4) << 4) | (p[2] as usize >> 4);
             let b = &mut bins[key];
             b.0 += 1;
             b.1[0] += p[0] as u64;
@@ -187,10 +194,13 @@ pub fn two_tone(img: &RgbImage) -> (f32, f32) {
         .map(|(n, s)| {
             let count = *n;
             let nf = count as f32;
-            (count, [s[0] as f32 / nf, s[1] as f32 / nf, s[2] as f32 / nf])
+            (
+                count,
+                [s[0] as f32 / nf, s[1] as f32 / nf, s[2] as f32 / nf],
+            )
         })
         .collect();
-    best.sort_by(|a, b| b.0.cmp(&a.0));
+    best.sort_by_key(|b| std::cmp::Reverse(b.0));
     let first = best.first().copied().unwrap_or((0, [0.0; 3]));
     let second = best.get(1).copied().unwrap_or(first);
     let share = (first.0 + second.0) as f32 / total;

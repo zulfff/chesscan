@@ -37,7 +37,14 @@ fn main() -> anyhow::Result<()> {
     }
     // board frame + grid (skipped when size is 0: negative test case)
     if size > 0 {
-        fill(&mut img, x - 12, y - 12, size + 24, size + 24, Rgb([70, 60, 50]));
+        fill(
+            &mut img,
+            x - 12,
+            y - 12,
+            size + 24,
+            size + 24,
+            Rgb([70, 60, 50]),
+        );
     }
 
     // Optional: paste a real board render instead of a synthetic checkerboard.
@@ -71,7 +78,7 @@ fn main() -> anyhow::Result<()> {
     // centre blobs: proof that corner sampling works
     for r in 0..8u32 {
         for c in 0..8u32 {
-            if r >= 2 && r <= 5 {
+            if (2..=5).contains(&r) {
                 continue; // empty middle ranks
             }
             let cx = x + c * cell + cell / 2;

@@ -1,5 +1,5 @@
 // Sanity check for humanize.js. Run: node tools/humanize-check.mjs
-import { Humanizer, SKILL, temperature, cpCeiling, thinkTime } from "../extension/src/humanize.js";
+import { Humanizer, SKILL, Form, temperature, cpCeiling, thinkTime } from "../extension/src/humanize.js";
 
 const cp = v => ({ type: "cp", value: v });
 const lines = (vals, depth) =>
@@ -58,3 +58,17 @@ for (const instability of [0, 0.15, 0.4]) {
   );
 }
 console.log("forced:", thinkTime({ forced: true }));
+
+console.log("\n== auto form: 24 moves around base 1500 ==");
+const form = new Form({ base: 1500 });
+console.log(Array.from({ length: 24 }, () => form.next().elo).join(" "));
+
+console.log("\n== auto form: two sessions ==");
+for (const s of [0, 1, 2]) {
+  const f = new Form({ base: 1500 });
+  const elos = Array.from({ length: 60 }, () => f.next().elo);
+  const lo = Math.min(...elos);
+  const hi = Math.max(...elos);
+  const avg = Math.round(elos.reduce((a, b) => a + b, 0) / elos.length);
+  console.log(`session ${s}: ${elos.slice(0, 12).join(" ")} ... low ${lo} high ${hi} avg ${avg}`);
+}

@@ -7,6 +7,12 @@
 import puppeteer from "puppeteer-core";
 import { Chess } from "chess.js";
 import { cp, readFile, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { enPassantFromDiff } from "../src/turn.js";
+import { inferCastling, updateCastling } from "../src/fen.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 const FILES = "abcdefgh";
 const MAX_PLIES = Number(process.argv[2] || 12);
@@ -58,10 +64,19 @@ async function boardState() {
       if (color && type && file !== null) pieces.push({ color, type, file, rank });
     }
     const r = b.getBoundingClientRect();
+    // Same source the extension uses: the selected node in the move list.
+    const list = document.querySelector("wc-move-list, .move-list");
+    const marked = list ? list.querySelectorAll(".node.selected, .node .selected") : [];
+    const node = marked.length
+      ? marked[marked.length - 1].closest(".node")
+      : [...(list?.querySelectorAll(".node") ?? [])].pop();
+    const raw = node?.getAttribute("data-node") || "";
+    const tail = raw ? Number(raw.split("-").pop()) : NaN;
     return {
       pieces,
       rect: { left: r.left, top: r.top, width: r.width, height: r.height },
       flipped: b.classList.contains("flipped"),
+      ply: Number.isInteger(tail) && tail >= 0 ? tail : null,
     };
   });
 }
@@ -72,7 +87,15 @@ const boardKey = state =>
     .sort()
     .join("");
 
-function fenFrom(state, turn) {
+function gridOf(state) {
+  const grid = new Array(64).fill(null);
+  for (const p of state.pieces) grid[p.rank * 8 + p.file] = { color: p.color, type: p.type };
+  return grid;
+}
+
+let rights = null;
+
+function fenFrom(state, turn, prev = null) {
   const grid = Array.from({ length: 8 }, () => Array(8).fill(null));
   for (const p of state.pieces) grid[p.rank][p.file] = p;
   const rows = [];
@@ -94,20 +117,15 @@ function fenFrom(state, turn) {
     if (empty) row += empty;
     rows.push(row);
   }
-  const at = (f, r, color, type) => {
-    const p = grid[r][f];
-    return p && p.color === color && p.type === type;
-  };
-  let castling = "";
-  if (at(4, 0, "w", "k")) {
-    if (at(7, 0, "w", "r")) castling += "K";
-    if (at(0, 0, "w", "r")) castling += "Q";
-  }
-  if (at(4, 7, "b", "k")) {
-    if (at(7, 7, "b", "r")) castling += "k";
-    if (at(0, 7, "b", "r")) castling += "q";
-  }
-  return `${rows.join("/")} ${turn} ${castling || "-"} - 0 1`;
+  // Track rights across moves, the way the extension does, instead of reading
+  // them off placement (which would over-report after a king or rook moved).
+  rights = prev
+    ? updateCastling(rights ?? inferCastling(gridOf(prev)), gridOf(prev), gridOf(state))
+    : inferCastling(gridOf(state));
+  const ep = prev ? enPassantFromDiff(gridOf(prev), gridOf(state)) : null;
+  const epName = ep === null ? "-" : `${FILES[ep % 8]}${((ep / 8) | 0) + 1}`;
+  const fullmove = state.ply === null ? 1 : Math.floor(state.ply / 2) + 1;
+  return `${rows.join("/")} ${turn} ${rights || "-"} ${epName} 0 ${fullmove}`;
 }
 
 const panel = () => {
@@ -230,9 +248,10 @@ try {
   while (plies < MAX_PLIES) {
     // If the bot opens (we are black), wait for its first move.
     if (chess.turn() !== ourColor) {
-      const before = boardKey(await boardState());
+      const beforeState = await boardState();
+      const before = boardKey(beforeState);
       const moved = await waitBoardChange(before);
-      const fen = fenFrom(moved, ourColor);
+      const fen = fenFrom(moved, ourColor, beforeState);
       const ok = await waitExtensionFen(fen);
       transcript.push({ ply: ++plies, by: "bot", fen, ok, panel: await readPanel() });
       console.log(`ply ${plies} bot: ${fen} ${ok ? "ok" : "MISMATCH"}`);
@@ -255,10 +274,11 @@ try {
       move = pool[Math.floor(Math.random() * pool.length)];
     }
 
-    const before = boardKey(await boardState());
+    const beforeState = await boardState();
+    const before = boardKey(beforeState);
     await drag(move.from, move.to);
     const moved = await waitBoardChange(before);
-    const fen = fenFrom(moved, chess.turn() === "w" ? "b" : "w");
+    const fen = fenFrom(moved, chess.turn() === "w" ? "b" : "w", beforeState);
     const ok = await waitExtensionFen(fen);
     const p = await readPanel();
     if (p?.arrow) arrowSeen = true;
@@ -271,7 +291,7 @@ try {
     // Bot reply.
     const afterUs = boardKey(moved);
     const replied = await waitBoardChange(afterUs);
-    const fenBack = fenFrom(replied, ourColor);
+    const fenBack = fenFrom(replied, ourColor, moved);
     const okBack = await waitExtensionFen(fenBack);
     const pBack = await readPanel();
     if (pBack?.arrow) arrowSeen = true;
@@ -289,7 +309,7 @@ try {
   if (!analysed) throw new Error("extension never showed three engine lines");
   if (!arrowSeen && !finalPanel?.arrow) throw new Error("extension never drew the best-move arrow");
 
-  await page.screenshot({ path: "/data/home/chesscan-check/game-final.png" });
+  await page.screenshot({ path: join(here, "game-final.png") });
   console.log("\ntranscript:");
   for (const t of transcript) {
     console.log(
@@ -299,7 +319,7 @@ try {
   console.log(`\nPASS: ${plies} plies played, extension agreed every time`);
 } catch (err) {
   console.error("FAIL:", err.message);
-  await page.screenshot({ path: "/data/home/chesscan-check/game-fail.png" }).catch(() => {});
+  await page.screenshot({ path: join(here, "game-fail.png") }).catch(() => {});
   process.exitCode = 1;
 } finally {
   await browser.close();

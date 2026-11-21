@@ -35,6 +35,61 @@ export const SKILL = {
 };
 
 /**
+ * A profile for a rating: same knobs as SKILL, interpolated from the elo.
+ * Used by auto mode, where there is no fixed preset to copy.
+ */
+export function profileFor(elo, rng = Math.random) {
+  const t = Math.max(0, Math.min(1, (elo - 800) / 1600));
+  return {
+    elo: Math.round(elo),
+    aggression: 0.35 + 0.4 * rng(),
+    brilliancy: 0.1 + (0.05 - 0.1) * t,
+    mistake: 0.15 + (0.02 - 0.15) * t,
+  };
+}
+
+function gauss(rng) {
+  return Math.sqrt(-2 * Math.log(1 - rng())) * Math.cos(2 * Math.PI * rng());
+}
+
+/**
+ * Form over a session: a player is not a constant rating.
+ *
+ * A day starts somewhere around the base (good day, off day), drifts while
+ * mean-reverting, and occasionally tilts for a few moves in either direction.
+ * Per move there is noise on top. The point is a partner whose strength moves
+ * the way a person's does across an evening, not a random number generator.
+ */
+export class Form {
+  constructor({ base = 1500, spread = 80, rng = Math.random } = {}) {
+    this.base = base;
+    this.rng = rng;
+    this.mood = gauss(rng) * spread;
+    this.tilt = 0;
+    this.tiltLeft = 0;
+    this.elo = Math.round(base + this.mood);
+  }
+
+  next() {
+    this.mood *= 0.97;
+    this.mood += gauss(this.rng) * 12;
+
+    if (this.tiltLeft > 0) {
+      this.tiltLeft--;
+      if (this.tiltLeft === 0) this.tilt = 0;
+    } else if (this.rng() < 0.04) {
+      const sign = this.rng() < 0.5 ? -1 : 1;
+      this.tilt = sign * (110 + this.rng() * 160);
+      this.tiltLeft = 3 + Math.floor(this.rng() * 5);
+    }
+
+    const raw = this.base + this.mood + this.tilt + gauss(this.rng) * 55;
+    this.elo = Math.round(Math.max(600, Math.min(2500, raw)));
+    return profileFor(this.elo, this.rng);
+  }
+}
+
+/**
  * Search temperature for a rating. Calibrated so a 1400 sits near 0.07 win
  * probability of slack and a 2300 is effectively sharp, but not exact.
  */

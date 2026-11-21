@@ -59,6 +59,12 @@ function parseInfo(line) {
   return { depth, multipv, score, pv };
 }
 
+function lineSignature(lines) {
+  return lines
+    .map(l => `${l.multipv}:${l.depth}:${l.score.type}${l.score.value}:${l.pv.join(" ")}`)
+    .join("|");
+}
+
 export class Engine {
   constructor({ jsUrl }) {
     this.jsUrl = jsUrl;
@@ -149,6 +155,7 @@ export class Engine {
     if (!force && now - job.lastEmit < 80) return;
     job.lastEmit = now;
     const lines = [...job.lines.values()].sort((a, b) => a.multipv - b.multipv);
+    job.signature = lineSignature(lines);
     job.onLines(lines);
   }
 
@@ -194,7 +201,9 @@ export class Engine {
     clearTimeout(this.watchdog);
     this.watchdog = null;
     const lines = [...job.lines.values()].sort((a, b) => a.multipv - b.multipv);
-    job.onLines(lines);
+    // emit() has usually delivered this exact set already; painting it twice
+    // makes the panel re-render every PV at the end of each search.
+    if (lineSignature(lines) !== job.signature) job.onLines(lines);
     job.onDone(lines);
   }
 
@@ -212,6 +221,13 @@ export class Engine {
 
   fail(err) {
     this.stop();
+    // A worker that failed to initialise cannot be reused. Drop it so the next
+    // analyze() starts a clean one instead of leaking the dead instance.
+    if (this.worker) {
+      this.worker.terminate();
+      this.worker = null;
+    }
+    this.ready = null;
     if (this.onError) this.onError(err);
   }
 

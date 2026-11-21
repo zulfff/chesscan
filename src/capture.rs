@@ -108,6 +108,7 @@ impl Source {
             None => Source::Screen { monitor },
             #[cfg(not(feature = "live"))]
             None => {
+                let _ = monitor;
                 panic!("built without the `live` feature; pass a file path");
             }
         }

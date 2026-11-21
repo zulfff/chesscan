@@ -72,10 +72,8 @@ fn shape_ok(b: &fen::Board) -> Option<usize> {
         && bk == 1
         && wp <= 8
         && bp <= 8
-        && wtot >= 2
-        && wtot <= 16
-        && btot >= 2
-        && btot <= 16;
+        && (2..=16).contains(&wtot)
+        && (2..=16).contains(&btot);
     if ok {
         Some(named)
     } else {
@@ -88,7 +86,7 @@ fn shape_ok(b: &fen::Board) -> Option<usize> {
 /// produce a stray `K` and `k`; it cannot produce a consistent army on top of
 /// two flat alternating colours.
 pub fn plausible(b: &fen::Board) -> bool {
-    !b.iter().any(|&c| c == '?') && shape_ok(b).is_some()
+    !b.contains(&'?') && shape_ok(b).is_some()
 }
 
 /// Find the board and prove it is one.
@@ -124,7 +122,7 @@ pub fn detect_board(frame: &RgbImage, cfg: &Config) -> Result<BoardRect> {
                 if named == 64 {
                     return Ok(*rect);
                 }
-                if partial.map_or(true, |(_, best)| named > best) {
+                if partial.is_none_or(|(_, best)| named > best) {
                     partial = Some((*rect, named));
                 }
             }

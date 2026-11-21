@@ -50,13 +50,20 @@ export class RemoteEngine {
   heartbeat() {
     const job = this.job;
     if (!job) return;
-    if (Date.now() - job.lastSeen > 8000) {
-      // The worker restarted (or the search died): ask again.
-      job.jobId = `${this.key}:${++this.seq}`;
+    // A depth-22 lite search can spend a while between info lines, so this is
+    // deliberately longer than a normal depth-18 search. If the background
+    // really died, the tab waits this long before asking again.
+    if (Date.now() - job.lastSeen > 12000) {
+      // The worker restarted (or the search died): ask again with a fresh job
+      // id and sequence number. The host uses the sequence to reject a stale
+      // resend that overtakes a newer one.
+      job.seq = ++this.seq;
+      job.jobId = `${this.key}:${job.seq}`;
       job.lastSeen = Date.now();
       this.send({
         type: "chesscan:analyze",
         jobId: job.jobId,
+        seq: job.seq,
         fen: job.fen,
         depth: job.depth,
         multipv: job.multipv,

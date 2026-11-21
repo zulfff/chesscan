@@ -74,6 +74,8 @@ export const CSS = `
   padding: 5px 10px;
   border-left: 2px solid transparent;
 }
+.line[data-uci] { cursor: pointer; }
+.line[data-uci]:focus-visible { outline: 2px solid #8ab4f8; outline-offset: -2px; }
 .line.best { border-left-color: #d7b061; background: rgba(215, 176, 97, 0.06); }
 .line .san {
   font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -91,7 +93,10 @@ export const CSS = `
 .line.chosen { border-left-color: #7fc8a9; background: rgba(127, 200, 169, 0.09); }
 .line.chosen .san { color: #eef1f2; }
 .line.chosen .sc { color: #7fc8a9; }
-.line.placeholder { color: #6d737c; grid-template-columns: 1fr; }
+/* The line the user pinned by clicking it: this is what the arrows draw. */
+.line.pinned { border-left-color: #8ab4f8; background: rgba(138, 180, 248, 0.10); }
+.line.pinned .san, .line.pinned .sc { color: #a9c7ff; }
+.line.placeholder { color: #6d737c; grid-template-columns: 1fr; cursor: default; }
 
 .status { padding: 0 10px 7px; color: #d98c8c; font-size: 11px; }
 .status:empty { display: none; }

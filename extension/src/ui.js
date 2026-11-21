@@ -3,10 +3,11 @@ import { CSS } from "./ui.css.js";
 const DEPTHS = [12, 14, 16, 18, 20, 22];
 const PLAYS = [
   ["off", "off"],
+  ["auto", "auto"],
   ["casual", "casual"],
   ["club", "club"],
   ["solid", "solid"],
-  ["strongClub", "strong"],
+  ["strongClub", "strong club"],
   ["expert", "expert"],
   ["master", "master"],
   ["max", "max"],
@@ -38,6 +39,7 @@ const MARKUP = `
           </div>
           <div class="bar sub">
             <label class="depth">play<select id="play" aria-label="How human-like the suggested move should be" title="Pick moves the way a player of this rating would, or max for full engine strength"></select></label>
+            <label class="depth">pv<select id="pv" aria-label="How many plies of the suggested line to draw" title="How many plies of the suggested line to draw on the board"></select></label>
             <span class="why" id="why" aria-live="polite"></span>
           </div>
         </div>
@@ -89,6 +91,7 @@ export class Panel {
       guide: $("guide"),
       depth: $("depth"),
       play: $("play"),
+      pv: $("pv"),
       why: $("why"),
       pause: $("pause"),
       collapse: $("collapse"),
@@ -122,18 +125,33 @@ export class Panel {
       this.el.play.appendChild(o);
     }
 
+    for (const n of [1, 2, 3]) {
+      const o = document.createElement("option");
+      o.value = String(n);
+      o.textContent = String(n);
+      this.el.pv.appendChild(o);
+    }
+
     this.el.close.addEventListener("click", () => this.h.onClose());
     this.el.collapse.addEventListener("click", () => this.h.onCollapse());
     this.el.pill.addEventListener("click", () => this.h.onOpen());
     this.el.flip.addEventListener("click", () => this.h.onFlip());
     this.el.guide.addEventListener("change", () => this.h.onGuide(this.el.guide.value));
     this.el.play.addEventListener("change", () => this.h.onPlay(this.el.play.value));
+    this.el.pv.addEventListener("change", () => this.h.onPv(Number(this.el.pv.value)));
     this.el.pause.addEventListener("click", () => this.h.onPause());
     this.el.copy.addEventListener("click", () => this.h.onCopy(this.fen));
     this.el.depth.addEventListener("change", () => this.h.onDepth(Number(this.el.depth.value)));
     this.el.lines.addEventListener("click", ev => {
       const row = ev.target.closest(".line");
-      if (row?.dataset.san) this.h.onLineClick?.(row.dataset.san);
+      if (row?.dataset.uci) this.h.onLineClick?.(row.dataset.uci);
+    });
+    this.el.lines.addEventListener("keydown", ev => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      const row = ev.target.closest(".line");
+      if (!row?.dataset.uci) return;
+      ev.preventDefault();
+      this.h.onLineClick?.(row.dataset.uci);
     });
 
     this.installDrag();
@@ -160,10 +178,9 @@ export class Panel {
     const end = () => {
       if (!start) return;
       start = null;
-      this.pos = {
-        left: parseFloat(this.el.panel.style.left),
-        top: parseFloat(this.el.panel.style.top),
-      };
+      const left = parseFloat(this.el.panel.style.left);
+      const top = parseFloat(this.el.panel.style.top);
+      this.pos = Number.isFinite(left) && Number.isFinite(top) ? { left, top } : null;
       this.h.onMove(this.pos);
     };
     this.el.drag.addEventListener("pointerup", end);
@@ -174,10 +191,13 @@ export class Panel {
     if (!this.mounted) return;
     const maxLeft = Math.max(8, innerWidth - WIDTH - 8);
     const maxTop = Math.max(8, innerHeight - 96);
-    const left = pos
+    // Stored positions can be missing, stale, or NaN after a bad drag. Treat
+    // those as "no position" instead of writing NaNpx into the style.
+    const valid = pos && Number.isFinite(pos.left) && Number.isFinite(pos.top);
+    const left = valid
       ? Math.min(Math.max(8, pos.left), maxLeft)
       : Math.max(8, innerWidth - WIDTH - 16);
-    const top = pos ? Math.min(Math.max(8, pos.top), maxTop) : 64;
+    const top = valid ? Math.min(Math.max(8, pos.top), maxTop) : 64;
     this.el.panel.style.left = `${left}px`;
     this.el.panel.style.top = `${top}px`;
   }
@@ -219,6 +239,11 @@ export class Panel {
 
   setPlayMode(mode) {
     this.el.play.value = mode || "off";
+  }
+
+  /** How many plies of the suggested line the arrow chain draws. */
+  setPv(n) {
+    this.el.pv.value = String(n || 1);
   }
 
   /** One word for why the highlighted move was picked. */
@@ -280,9 +305,15 @@ export class Panel {
     const frag = document.createDocumentFragment();
     rows.forEach((row, i) => {
       const li = document.createElement("li");
-      li.className = `line${i === 0 ? " best" : ""}${row.chosen ? " chosen" : ""}`;
-      li.dataset.san = row.san;
+      li.className = `line${i === 0 ? " best" : ""}${row.chosen ? " chosen" : ""}${row.pinned ? " pinned" : ""}`;
+      if (row.uci) {
+        li.dataset.uci = row.uci;
+        li.tabIndex = 0;
+        li.setAttribute("role", "button");
+        li.setAttribute("aria-pressed", row.pinned ? "true" : "false");
+      }
       if (row.chosen && row.note) li.title = `picked: ${row.note}`;
+      else if (row.uci) li.title = "click to draw this line on the board";
       const san = document.createElement("span");
       san.className = "san";
       san.title = row.san;

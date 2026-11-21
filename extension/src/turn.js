@@ -24,6 +24,32 @@ export function turnFromDiff(prev, curr) {
 }
 
 /**
+ * En passant target created by a double pawn push. The pawn has to leave a
+ * square, travel two ranks on the same file, and land on an empty square.
+ * Returns the skipped square index (the square an enemy pawn could capture
+ * onto), or null when the change was not a double push.
+ */
+export function enPassantFromDiff(prev, curr) {
+  if (!prev || !curr || prev.length !== 64 || curr.length !== 64) return null;
+  for (let sq = 0; sq < 64; sq++) {
+    const a = prev[sq];
+    if (!a || a.type !== "p" || curr[sq]) continue;
+    // A double push can only start from the pawn's home rank.
+    if (((sq / 8) | 0) !== (a.color === "w" ? 1 : 6)) continue;
+    const dir = a.color === "w" ? 1 : -1;
+    const mid = sq + dir * 8;
+    const to = sq + dir * 16;
+    if (to < 0 || to > 63 || mid < 0 || mid > 63) continue;
+    if (sq % 8 !== to % 8) continue;
+    const b = curr[to];
+    if (!b || b.type !== "p" || b.color !== a.color) continue;
+    if (curr[mid]) continue;
+    return mid;
+  }
+  return null;
+}
+
+/**
  * The highlighted last move marks two squares. The destination is the one that
  * holds a piece, and that piece belongs to the side that just moved.
  */

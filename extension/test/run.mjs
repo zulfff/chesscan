@@ -9,10 +9,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
-import { toFen, inferCastling, plausible } from "../src/fen.js";
-import { turnFromDiff, turnFromLastMove } from "../src/turn.js";
-import { Humanizer, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
-import { chesscomHtml, fenPieces, START, AFTER_E4, CASTLED } from "./fixtures.mjs";
+import { toFen, inferCastling, updateCastling, plausible } from "../src/fen.js";
+import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "../src/turn.js";
+import { squareFromTransform } from "../src/boards/chesscom.js";
+import { Humanizer, Form, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
+import { chesscomHtml, fenPieces, START, AFTER_E4, AFTER_E4_E5_NF3, CASTLED } from "./fixtures.mjs";
 
 const root = dirname(fileURLToPath(import.meta.url));
 const extRoot = join(root, "..");
@@ -35,6 +36,45 @@ function unitChecks() {
   after[28] = { color: "w", type: "p" };
   assert.equal(turnFromDiff(start, after), "b");
   assert.equal(turnFromLastMove(after, [12, 28]), "b");
+
+  // En passant target from a double push, both colours.
+  assert.equal(enPassantFromDiff(start, after), 20); // e3
+  const afterE5 = after.slice();
+  afterE5[52] = null; // e7
+  afterE5[36] = { color: "b", type: "p" }; // e5
+  assert.equal(enPassantFromDiff(after, afterE5), 44); // e6
+  assert.equal(enPassantFromDiff(after, after), null);
+
+  // Castling rights survive only until the king or rook actually moves.
+  const kingMoved = start.slice();
+  kingMoved[4] = null;
+  kingMoved[12] = { color: "w", type: "k" };
+  assert.equal(updateCastling("KQkq", start, kingMoved), "kq");
+  assert.equal(updateCastling("KQkq", start, start), "KQkq");
+
+  const rookMoved = start.slice();
+  rookMoved[0] = null;
+  rookMoved[8] = { color: "w", type: "r" };
+  assert.equal(updateCastling("KQkq", start, rookMoved), "Kkq");
+
+  const rookCaptured = start.slice();
+  rookCaptured[7] = { color: "b", type: "r" };
+  assert.equal(updateCastling("KQkq", start, rookCaptured), "Qkq");
+
+  // A king that walks back home does not get its rights back.
+  assert.equal(updateCastling("kq", kingMoved, start), "kq");
+
+  // FEN carries the target square, and a bad one is ignored.
+  assert.equal(toFen(after, "b", { enPassant: 20 }), `${AFTER_E4} b KQkq e3 0 1`);
+  assert.equal(toFen(after, "b", { enPassant: 64 }), `${AFTER_E4} b KQkq - 0 1`);
+
+  // Board reading: percentage and pixel transforms, both orientations.
+  assert.equal(squareFromTransform("translate(400%, 600%)", false, 60), 12); // e2
+  assert.equal(squareFromTransform("translate(400%, 100%)", false, 60), 52); // e7
+  assert.equal(squareFromTransform("translate(0%, 0%)", true, 60), 7); // h1
+  assert.equal(squareFromTransform("translate(700%, 700%)", true, 60), 56); // a8
+  assert.equal(squareFromTransform("translate(240px, 360px)", false, 60), 12); // e2
+  assert.equal(squareFromTransform("translate(-50%, -50%)", false, 60), null);
 
   // A navigation jump changes too much to be a move.
   const other = fenPieces(CASTLED).reduce((acc, p) => {
@@ -67,13 +107,16 @@ function startServer({ csp }) {
     const board = url.searchParams.get("board") || START;
     const flipped = url.searchParams.get("flip") === "1";
     const last = (url.searchParams.get("last") || "").split(",").filter(Boolean);
+    const moves = (url.searchParams.get("moves") || "").split(",").filter(Boolean);
+    const sel = url.searchParams.get("sel");
+    const selected = sel === null || sel === "" ? null : Number(sel);
     const headers = { "content-type": "text/html; charset=utf-8" };
     if (csp) {
       headers["content-security-policy"] =
         "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'";
     }
     res.writeHead(200, headers);
-    res.end(chesscomHtml(board, { flipped, last }));
+    res.end(chesscomHtml(board, { flipped, last, moves, selected }));
   });
   return new Promise(resolve => server.listen(PORT, "127.0.0.1", () => resolve(server)));
 }
@@ -152,6 +195,24 @@ async function setPlay(page, mode) {
   );
 }
 
+async function setPv(page, n) {
+  await page.evaluate(
+    panelEval(`s => { const sel = s.getElementById('pv'); sel.value = '${n}'; sel.dispatchEvent(new Event('change', { bubbles: true })); }`),
+  );
+}
+
+async function waitArrowCount(page, n, timeout = 8000) {
+  await page.waitForFunction(
+    want => {
+      const layer = document.getElementById("chesscan-arrow-layer");
+      const drawn = layer ? layer.querySelectorAll("line").length : 0;
+      return layer?.style.display !== "none" && drawn === want;
+    },
+    { timeout },
+    n,
+  );
+}
+
 async function waitChosen(page, timeout = 60000) {
   await page.waitForFunction(
     () => {
@@ -210,6 +271,17 @@ async function runBrowserChecks({ csp }) {
     assert.equal(p.status, "");
     console.log(`[${label}] start: ok (${p.lines[0]} ${p.scores[0]} ${p.prob})`);
     await page.screenshot({ path: join(root, `screenshot-${label}.png`) });
+
+    // 1b. arrow chain: the suggestion plus the reply it invites
+    await waitArrowCount(page, 2);
+    await setPv(page, 3);
+    await waitArrowCount(page, 3);
+    await setPv(page, 1);
+    await waitArrowCount(page, 1);
+    await setPv(page, 2);
+    await waitArrowCount(page, 2);
+    assert.equal(await page.evaluate(panelEval(`s => s.getElementById('pv').value`)), "2");
+    console.log(`[${label}] arrow chain: ok`);
 
     // 2. guide selector: only the bottom side gets the arrow in auto mode
     await setGuide(page, "black");
@@ -276,23 +348,35 @@ async function runBrowserChecks({ csp }) {
     assert.notEqual(sol.why, "slip", "solid has mistakes disabled");
     console.log(`[${label}] solid: ok (${sol.why})`);
 
+    // 2e. auto: a live form, shown with the pick
+    await setPlay(page, "auto");
+    await waitChosen(page);
+    const autop = await page.evaluate(
+      panelEval(`s => ({ lines: s.querySelectorAll(".line:not(.placeholder)").length, why: s.getElementById("why").textContent })`),
+    );
+    assert.equal(autop.lines, 4);
+    assert.match(autop.why, /^(natural|slip|find|forced) \d{3,4}$/);
+    console.log(`[${label}] auto: ok (${autop.why})`);
+
     await setPlay(page, "off");
     await waitLines(page);
 
     // 3. a move happens in the DOM -> turn flips without any site API
     await applyMove(page, "52", "54");
-    await waitFen(page, `${AFTER_E4} b KQkq - 0 1`);
+    await waitFen(page, `${AFTER_E4} b KQkq e3 0 1`);
     await waitLines(page);
     p = await readPanel(page);
     assert.equal(p.turn, "b");
     console.log(`[${label}] move detection: ok (${p.lines[0]} ${p.scores[0]})`);
 
-    // 4. manual flip overrides the side to move
+    // 4. manual flip overrides the side to move. The en passant target is
+    // illegal for the flipped side, so the panel drops it; flipping back
+    // restores it because the tracked target never left the state.
     await page.evaluate(panelEval(`s => s.getElementById('flip').click()`));
     await waitFen(page, `${AFTER_E4} w KQkq - 0 1`);
     console.log(`[${label}] manual flip: ok`);
     await page.evaluate(panelEval(`s => s.getElementById('flip').click()`));
-    await waitFen(page, `${AFTER_E4} b KQkq - 0 1`);
+    await waitFen(page, `${AFTER_E4} b KQkq e3 0 1`);
 
     // 5. two quick moves while a search is running: the stale bestmove must not
     //    finalize the new job with no lines.
@@ -330,6 +414,71 @@ async function runBrowserChecks({ csp }) {
     await page.evaluate(panelEval(`s => s.getElementById('pill').click()`));
     await waitLines(page);
     console.log(`[${label}] close/reopen: ok`);
+
+    // 8. move list: the side to move and the move number are read from
+    //    wc-move-list instead of inferred from the pieces.
+    const listPage = await browser.newPage();
+    await listPage.goto(
+      `http://127.0.0.1:${PORT}/?board=${encodeURIComponent(AFTER_E4_E5_NF3)}&moves=e4,e5,Nf3&sel=2`,
+      { waitUntil: "load" },
+    );
+    await waitFen(listPage, `${AFTER_E4_E5_NF3} b KQkq - 0 2`);
+    await setDepth(listPage, 12);
+    await setGuide(listPage, "both");
+    await waitLines(listPage);
+    console.log(`[${label}] move list: ok (side to move read, fullmove 2)`);
+
+    // 9. clicking a PV pins the arrows to that line; clicking it again unpins.
+    const picked = await listPage.evaluate(
+      panelEval(`s => {
+        const rows = [...s.querySelectorAll('.line[data-uci]')];
+        if (rows.length < 2) return null;
+        const uci = rows[1].dataset.uci;
+        rows[1].click();
+        return { uci, pinned: s.querySelector('.line.pinned')?.dataset.uci ?? null };
+      }`),
+    );
+    assert.ok(picked, "need at least two PV rows with a first move");
+    assert.equal(picked.pinned, picked.uci, "clicking a line must pin that line");
+    const arrows = await listPage.evaluate(() => {
+      const board = document.querySelector("wc-chess-board");
+      const size = board.getBoundingClientRect().width / 8;
+      const lines = [...document.querySelectorAll("#chesscan-arrow-layer svg line")];
+      return { size, first: lines.length ? ["x1", "y1", "x2", "y2"].map(a => Number(lines[0].getAttribute(a))) : null };
+    });
+    assert.ok(arrows.first, "the pinned line must draw an arrow");
+    const want = (() => {
+      const sq = u => (Number(u[1]) - 1) * 8 + "abcdefgh".indexOf(u[0]);
+      const c = s => [((s % 8) + 0.5) * arrows.size, (7 - ((s / 8) | 0) + 0.5) * arrows.size];
+      const [x1, y1] = c(sq(picked.uci.slice(0, 2)));
+      const [x2, y2] = c(sq(picked.uci.slice(2, 4)));
+      const len = Math.hypot(x2 - x1, y2 - y1);
+      return [(x2 - x1) / len, (y2 - y1) / len];
+    })();
+    const [x1, y1, x2, y2] = arrows.first;
+    const alen = Math.hypot(x2 - x1, y2 - y1);
+    assert.ok(
+      Math.abs((x2 - x1) / alen - want[0]) < 0.01 &&
+        Math.abs((y2 - y1) / alen - want[1]) < 0.01,
+      "the first arrow must point along the pinned move",
+    );
+    await listPage.evaluate(panelEval(`s => s.querySelector('.line.pinned')?.click()`));
+    const unpinned = await listPage.evaluate(panelEval(`s => s.querySelectorAll('.line.pinned').length`));
+    assert.equal(unpinned, 0, "clicking the pinned line must unpin it");
+    console.log(`[${label}] pinned line: ok`);
+
+    // 10. moving the selected node changes the side to move and the move number
+    //     without touching a single piece.
+    await listPage.evaluate(() => {
+      const nodes = [...document.querySelectorAll("wc-move-list .node")];
+      for (const el of document.querySelectorAll("wc-move-list .selected")) {
+        el.classList.remove("selected");
+      }
+      nodes[1].querySelector(".node-highlight-content").classList.add("selected");
+    });
+    await waitFen(listPage, `${AFTER_E4_E5_NF3} w KQkq - 0 1`);
+    console.log(`[${label}] move list turn: ok`);
+    await listPage.close();
 
     await page.close();
     console.log(`[${label}] ALL PASS`);
@@ -414,6 +563,24 @@ function humanizeChecks() {
     assert.ok(p.cpLoss <= 60 + 1e-9, `solid cpLoss ${p.cpLoss} exceeds 60`);
     assert.notEqual(p.reason, "mistake", "solid profile must never slip");
   }
+
+  // Auto mode: form drifts, but stays a plausible rating and a reproducible one.
+  const form = new Form({ base: 1500, rng: seeded(11) });
+  const elos = Array.from({ length: 200 }, () => form.next().elo);
+  assert.ok(elos.every(e => e >= 600 && e <= 2500), "form must stay in rating range");
+  const mean = elos.reduce((a, b) => a + b, 0) / elos.length;
+  const sd = Math.sqrt(elos.reduce((a, b) => a + (b - mean) ** 2, 0) / elos.length);
+  assert.ok(mean > 1200 && mean < 1800, `form should centre near its base (${mean})`);
+  assert.ok(sd > 20, `form should actually vary (sd ${sd.toFixed(1)})`);
+  assert.ok(elos.some(e => e < mean - 40), "form must have quiet stretches");
+  assert.ok(elos.some(e => e > mean + 40), "form must have good stretches");
+
+  const fa = new Form({ rng: seeded(12) });
+  const fb = new Form({ rng: seeded(12) });
+  assert.deepEqual(
+    Array.from({ length: 20 }, () => fa.next().elo),
+    Array.from({ length: 20 }, () => fb.next().elo),
+  );
 
   // Deterministic under an injected rng.
   const a = new Humanizer({ elo: 1400, rng: seeded(7) });

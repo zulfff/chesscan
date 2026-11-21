@@ -34,7 +34,63 @@ export function inferCastling(pieces) {
   return rights;
 }
 
-export function toFen(pieces, turn, { castling, fullmove = 1 } = {}) {
+/**
+ * Update castling rights from a single move. `prev` and `curr` are the two
+ * 64-square snapshots; the move between them is the only thing that can change
+ * rights. A king that leaves home loses both rights, a rook that leaves its
+ * home corner loses that side, and a rook captured on its home corner loses
+ * that side. Rights are never granted back, so a king or rook that walks home
+ * cannot resurrect them.
+ */
+export function updateCastling(rights, prev, curr) {
+  if (!prev || !curr || prev.length !== 64 || curr.length !== 64) return rights;
+  let out = rights || "";
+  const drop = chars => {
+    for (const c of chars) out = out.replace(c, "");
+  };
+  const rookHome = (color, sq) =>
+    (color === "w" && (sq === 0 || sq === 7)) || (color === "b" && (sq === 56 || sq === 63));
+  const dropRook = (color, sq) => {
+    if (color === "w" && sq === 0) drop("Q");
+    else if (color === "w" && sq === 7) drop("K");
+    else if (color === "b" && sq === 56) drop("q");
+    else if (color === "b" && sq === 63) drop("k");
+  };
+
+  for (let sq = 0; sq < 64; sq++) {
+    const a = prev[sq];
+    const b = curr[sq];
+    if (!a && !b) continue;
+
+    // A rook captured on its home square is gone even though the capturing
+    // piece now occupies the square.
+    if (a && b && a.color !== b.color && a.type === "r" && rookHome(a.color, sq)) {
+      dropRook(a.color, sq);
+    }
+
+    // A piece that leaves a square. This is the move that actually costs the
+    // right, even if the piece later comes back.
+    if (a && !b) {
+      if (a.type === "k") drop(a.color === "w" ? "KQ" : "kq");
+      if (a.type === "r") dropRook(a.color, sq);
+    }
+
+    // A king arriving anywhere means it has moved; its rights are already
+    // gone, but this also covers a king that was teleported by a jump.
+    if (!a && b && b.type === "k") drop(b.color === "w" ? "KQ" : "kq");
+  }
+  return out;
+}
+
+function squareName(sq) {
+  if (typeof sq === "string") {
+    return /^[a-h][1-8]$/.test(sq) ? sq : "-";
+  }
+  if (!Number.isInteger(sq) || sq < 0 || sq > 63) return "-";
+  return `${FILES[sq % 8]}${((sq / 8) | 0) + 1}`;
+}
+
+export function toFen(pieces, turn, { castling, enPassant = "-", fullmove = 1 } = {}) {
   const rows = [];
   for (let rank = 7; rank >= 0; rank--) {
     let row = "";
@@ -55,7 +111,7 @@ export function toFen(pieces, turn, { castling, fullmove = 1 } = {}) {
     rows.push(row);
   }
   const rights = castling === undefined ? inferCastling(pieces) : castling;
-  return `${rows.join("/")} ${turn} ${rights || "-"} - 0 ${fullmove}`;
+  return `${rows.join("/")} ${turn} ${rights || "-"} ${squareName(enPassant)} 0 ${fullmove}`;
 }
 
 /** Cheap sanity gates before handing a position to chess.js. */
