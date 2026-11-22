@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #17181b;
+        --card: #202227;
+        --line: #30333a;
+        --ink: #ece9e2;
+        --muted: #9aa0a8;
+        --gold: #d7b061;
+        --red: #c4443a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        width: 306px;
+        margin: 0;
+        padding: 14px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { margin: 0 0 2px; font-size: 14px; letter-spacing: .02em; }
+      h1 span { color: var(--gold); font-weight: 600; }
+      .tab {
+        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .opts {
+        display: grid;
+        gap: 7px;
+        padding: 10px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--card);
+      }
+      label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+      input[type="checkbox"] { accent-color: var(--gold); margin: 0; }
+      .note { color: var(--muted); font-size: 11px; margin: 0 0 12px; }
+      button {
+        width: 100%;
+        margin-top: 12px;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 9px;
+        background: var(--gold);
+        color: #17181b;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.06); }
+      button:disabled { opacity: .45; cursor: default; }
+      button[data-on="1"] { background: var(--red); color: #fff; }
+      .status {
+        margin-top: 10px;
+        min-height: 17px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .status.bad { color: #f08a80; }
+      code { color: var(--gold); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    </style>
+  </head>
+  <body>
+    <h1>chesscan <span>recorder</span></h1>
+    <p class="tab" id="tab">checking the tab…</p>
+
+    <div class="opts">
+      <label><input type="checkbox" id="arrow" checked /> hide the arrow</label>
+      <label><input type="checkbox" id="panel" checked /> hide the panel</label>
+      <label><input type="checkbox" id="coach" checked /> coach window (not recorded)</label>
+    </div>
+    <p class="note">
+      Records this tab: board, clock, chat, move list. Hidden things stay out of
+      the video; the coach window is where you read the suggestion.
+    </p>
+
+    <button id="go" disabled>Start recording</button>
+    <div class="status" id="status"></div>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

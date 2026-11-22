@@ -1,0 +1,14 @@
+{
+  "name": "chesscan-recorder",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Record a chess.com tab without the chesscan arrow or panel in the video.",
+  "license": "MIT",
+  "scripts": {
+    "test:live": "node test/live-record.mjs"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^24.0.0"
+  }
+}

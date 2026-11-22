@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #141518;
+        --card: #1e2025;
+        --line: #2f3239;
+        --ink: #ece9e2;
+        --muted: #98a0a9;
+        --gold: #d7b061;
+        --red: #c4443a;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 14px 16px;
+        background: var(--bg);
+        color: var(--ink);
+        font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+      h1 { margin: 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+      .rec { color: var(--red); font-weight: 700; letter-spacing: .08em; }
+      .time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+      .move {
+        margin: 8px 0 0;
+        font-size: 44px;
+        font-weight: 750;
+        letter-spacing: -.02em;
+        color: var(--gold);
+        line-height: 1.05;
+      }
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 10px;
+        align-items: baseline;
+        min-height: 18px;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .score { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
+      .pv {
+        margin: 8px 0 0;
+        padding: 7px 9px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--card);
+        color: var(--ink);
+        font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        word-break: break-word;
+      }
+      .alts { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+      .alts li {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 5px 8px;
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--muted);
+      }
+      .alts .san { color: var(--ink); }
+      .fen {
+        margin: 8px 0 0;
+        color: #6d747c;
+        font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+        word-break: break-all;
+      }
+      .hint { margin: 8px 0 0; color: var(--muted); font-size: 11px; min-height: 15px; }
+      button {
+        width: 100%;
+        margin-top: 10px;
+        padding: 8px 12px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--red);
+        color: #fff;
+        font: inherit;
+        font-weight: 650;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.08); }
+      button:disabled { opacity: .5; cursor: default; }
+      .fine { margin: 6px 0 0; color: #5f666e; font-size: 9px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1><span class="rec">●</span> coach · not recorded</h1>
+      <span class="time" id="time">00:00</span>
+    </header>
+
+    <div class="move" id="move">—</div>
+    <div class="meta">
+      <span class="score" id="score"></span>
+      <span id="prob"></span>
+      <span id="turn"></span>
+    </div>
+
+    <p class="pv" id="pvline"></p>
+    <ul class="alts" id="alts"></ul>
+    <p class="fen" id="fen"></p>
+    <p class="hint" id="hint">waiting for chesscan…</p>
+
+    <button id="stop">Stop recording</button>
+    <p class="fine">Outside the captured tab, so this never appears in the video.</p>
+
+    <script src="coach.js" type="module"></script>
+  </body>
+</html>
