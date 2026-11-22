@@ -10,8 +10,11 @@
 // fires the manifest's `_execute_action` shortcut with a real X key event. A
 // fresh profile matters too: suggested_key is applied at install time.
 //
-// Everything the tab does is asserted through the DOM and storage, not through
-// pixels; the video file is checked for existence and readability afterwards.
+// It then stops with the `recorder-stop` hotkey, which is the path the user
+// actually has while playing: no window to hunt for, no popup to reopen.
+//
+// Everything is asserted through the DOM and storage, not pixels; the video file
+// is checked for existence afterwards.
 
 import puppeteer from "puppeteer-core";
 import { execFileSync } from "node:child_process";
@@ -35,10 +38,7 @@ const xdo = (...args) => {
   }
 };
 
-const browser = await puppeteer.connect({
-  browserURL: `http://127.0.0.1:${PORT}`,
-  defaultViewport: null,
-});
+const browser = await puppeteer.connect({ browserURL: `http://127.0.0.1:${PORT}`, defaultViewport: null });
 
 const game = (await browser.pages()).find(page => /chess\.com/.test(page.url()));
 if (!game) {
@@ -46,16 +46,14 @@ if (!game) {
   process.exit(1);
 }
 await game.bringToFront();
-// Reload re-injects the content script and wakes the recorder's service worker
-// (Chrome stops an idle MV3 worker after ~30 s).
+// Reload re-injects the content script and wakes the recorder's service worker.
 await game.reload({ waitUntil: "domcontentloaded" }).catch(() => {});
 await sleep(5000);
 
 let sw = null;
-for (const target of browser.targets().filter(t => t.type() === "service_worker" && /background\.js/.test(t.url()))) {
+for (const target of browser.targets().filter(t => t.type() === "service_worker" && /src\/background\.js/.test(t.url()))) {
   const worker = await target.worker();
-  const name = await worker.evaluate(() => chrome.runtime.getManifest().name).catch(() => null);
-  if (name === "chesscan recorder") sw = worker;
+  if ((await worker.evaluate(() => chrome.runtime.getManifest().name).catch(() => null)) === "chesscan recorder") sw = worker;
 }
 if (!sw) {
   console.error("recorder service worker not found; is the extension loaded?");
@@ -70,7 +68,7 @@ const panelState = () =>
     return {
       panel: host ? getComputedStyle(host).display : "missing",
       arrow: arrow ? getComputedStyle(arrow).display : "missing",
-      style: document.getElementById("chesscan-rec-hide")?.textContent ?? null,
+      style: !!document.getElementById("chesscan-rec-hide"),
       fen: host?.shadowRoot?.getElementById("fen")?.textContent ?? null,
     };
   });
@@ -78,28 +76,31 @@ const panelState = () =>
 const recorderState = () =>
   sw.evaluate(async () => (await chrome.storage.session.get("recorder")).recorder ?? null);
 
+const pageByUrl = async frag => (await browser.pages()).find(p => p.url().includes(frag) && !p.isClosed()) ?? null;
+
 console.log("before:", JSON.stringify(await panelState()));
 
-const shortcut = await sw.evaluate(async () => {
-  const command = (await chrome.commands.getAll()).find(c => c.name === "_execute_action");
-  return command?.shortcut ?? "";
-});
-if (!shortcut) {
+const commands = await sw.evaluate(async () =>
+  Object.fromEntries((await chrome.commands.getAll()).map(c => [c.name, c.shortcut])),
+);
+const openKey = commands["_execute_action"];
+const stopKey = commands["recorder-stop"];
+console.log("shortcuts:", JSON.stringify(commands));
+if (!openKey) {
   console.error("no _execute_action shortcut: reinstall the extension in a fresh profile");
   await browser.disconnect();
   process.exit(1);
 }
 
+// Real invocation: tabCapture refuses anything else.
 xdo("search", "--name", "Chess Analysis Board", "windowactivate", "--sync");
 await sleep(400);
-xdo("key", "--clearmodifiers", shortcut.toLowerCase());
+xdo("key", "--clearmodifiers", openKey.toLowerCase());
 
-// Attach to the popup if CDP exposes it; either way the button is the same, and
-// the coordinate path below is the one that works on a bare Xvfb desktop.
 let popup = null;
 for (let i = 0; i < 10 && !popup; i += 1) {
   await sleep(500);
-  popup = (await browser.pages()).find(page => page.url().includes("/src/popup.html") && !page.isClosed()) ?? null;
+  popup = await pageByUrl("/src/popup.html");
 }
 
 let started = false;
@@ -119,56 +120,53 @@ if (!started) {
   xdo("mousemove", "1225", "328", "click", "1");
   console.log("start: clicked at 1225,328");
 }
-await sleep(2500);
+await sleep(3000);
 
 const state = await recorderState();
 const during = await panelState();
+const recordPage = await pageByUrl("/src/record.html");
+const recordUi = recordPage
+  ? await recordPage.evaluate(() => ({
+      status: document.getElementById("status").textContent,
+      stopDisabled: document.getElementById("stop").disabled,
+      saveHidden: document.getElementById("save").hidden,
+    }))
+  : null;
 console.log("state:", JSON.stringify(state));
 console.log("during:", JSON.stringify(during));
+console.log("record window:", JSON.stringify(recordUi));
 
-const coachPage = (await browser.pages()).find(page => page.url().includes("/src/coach.html")) ?? null;
-let coachWindow = null;
-if (state?.coachWindowId != null) {
-  coachWindow = await sw.evaluate(async id => {
-    try {
-      return await chrome.windows.get(id);
-    } catch {
-      return null;
-    }
-  }, state.coachWindowId);
-}
-console.log("coach window:", coachWindow ? `${coachWindow.width}x${coachWindow.height} @ ${coachWindow.left},${coachWindow.top}` : "MISSING");
-
-let coachSeen = null;
-if (coachPage && !coachPage.isClosed()) {
-  coachSeen = await coachPage.evaluate(() => ({
-    move: document.getElementById("move").textContent,
-    score: document.getElementById("score").textContent,
-    alts: [...document.querySelectorAll("#alts li")].map(li => li.textContent),
-  }));
-} else {
-  console.log("coach page did not attach to CDP");
-}
+const coachPage = await pageByUrl("/src/coach.html");
+const coachSeen = coachPage
+  ? await coachPage.evaluate(() => ({
+      move: document.getElementById("move").textContent,
+      score: document.getElementById("score").textContent,
+      alts: [...document.querySelectorAll("#alts li")].map(li => li.textContent),
+    }))
+  : null;
 console.log("coach:", JSON.stringify(coachSeen));
 
 await sleep(SECONDS * 1000);
 
-// Stop from the coach when possible, otherwise from the coach window's Stop
-// button by coordinates, otherwise through the worker.
-if (coachPage && !coachPage.isClosed()) {
-  await coachPage.click("#stop").catch(() => {});
-  console.log("stop: clicked the coach button");
-} else if (coachWindow) {
-  xdo("mousemove", String(Math.round(coachWindow.left + 170)), String(Math.round(coachWindow.top + 295)), "click", "1");
-  console.log("stop: clicked the coach at its Stop button");
+// The hotkey is the whole point: stop from the board, no UI hunting.
+if (stopKey) {
+  xdo("key", "--clearmodifiers", stopKey.toLowerCase());
+  console.log(`stop: pressed ${stopKey}`);
 } else {
+  console.log("no recorder-stop shortcut; stopping through the worker");
   await sw.evaluate(() => chrome.runtime.sendMessage({ type: "recorder-stop" }));
-  console.log("stop: through the worker");
 }
 await sleep(6000);
 
 const after = await panelState();
+const recordAfter = recordPage && !recordPage.isClosed()
+  ? await recordPage.evaluate(() => ({
+      status: document.getElementById("status").textContent,
+      saveHidden: document.getElementById("save").hidden,
+    }))
+  : null;
 console.log("after:", JSON.stringify(after));
+console.log("record window after:", JSON.stringify(recordAfter));
 console.log("state:", JSON.stringify(await recorderState()));
 
 const dir = join(homedir(), "Downloads");
@@ -182,17 +180,17 @@ if (newest) {
 console.log("file:", video ?? "none");
 
 const ok =
-  !!state &&
-  !!state.tabId &&
+  !!state?.uiTabId &&
   during.panel === "none" &&
   during.arrow === "none" &&
-  !!during.style &&
+  during.style &&
   !after.style &&
   after.panel !== "none" &&
   after.arrow !== "none" &&
+  !!recordUi &&
+  !recordUi.stopDisabled &&
   !!video &&
-  !!coachSeen &&
-  !!coachSeen.move;
+  !!coachSeen?.move;
 
 await browser.disconnect();
 console.log(ok ? "PASS" : "FAIL");

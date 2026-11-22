@@ -3,7 +3,7 @@
   "name": "chesscan recorder",
   "version": "0.1.0",
   "description": "Record a chess.com tab without the chesscan arrow or panel in the video.",
-  "permissions": ["activeTab", "tabCapture", "offscreen", "downloads", "storage"],
+  "permissions": ["activeTab", "tabCapture", "downloads", "storage"],
   "host_permissions": ["https://chess.com/*", "https://*.chess.com/*"],
   "background": { "service_worker": "src/background.js", "type": "module" },
   "action": {
@@ -13,7 +13,11 @@
   "commands": {
     "_execute_action": {
       "suggested_key": { "default": "Ctrl+Shift+E" },
-      "description": "Open the recorder popup"
+      "description": "Open the recorder"
+    },
+    "recorder-stop": {
+      "suggested_key": { "default": "Ctrl+Shift+S" },
+      "description": "Stop the current recording"
     }
   },
   "content_scripts": [

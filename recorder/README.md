@@ -34,6 +34,29 @@ That is the trade: clean video, suggestion one window over.
 The move shown is the first SAN of chesscan's best line (its panel lists whole
 principal variations). Alternatives show the first move and the score.
 
+## Two windows, one job
+
+| window | holds |
+| --- | --- |
+| **recorder** (top-left) | the timer, Stop, and the video itself |
+| **coach** (below it) | the suggestion, never recorded |
+
+MediaRecorder lives in the recorder window because a service worker is killed
+after ~30 s idle and an offscreen document goes down with it. A plain extension
+page survives, so stopping and saving do not depend on any other window being
+alive.
+
+Stopping works four ways, all the same path:
+
+- **Ctrl+Shift+S** — the useful one, from the board, no alt-tab;
+- the recorder window's **Stop recording**;
+- the popup's Stop;
+- the coach window's Stop.
+
+Saving happens automatically to Downloads (`chesscan-<timestamp>.webm`), and the
+recorder window also keeps a **Save to Downloads** button for the finished file
+until you close that window — so a download that failed once can still be saved.
+
 ## Load it
 
 1. `chrome://extensions` → developer mode → **Load unpacked** → pick this
@@ -44,10 +67,14 @@ principal variations). Alternatives show the first move and the score.
 There is no build step. The files under `src/` are what Chrome loads.
 
 `chrome.tabCapture` only hands out a stream id to an extension Chrome considers
-invoked on the tab, so the manifest declares `activeTab` and a
-`_execute_action` keyboard shortcut (`Ctrl+Shift+E`) alongside the toolbar
-button. Any real invocation works; the shortcut is handy when the icon is not
-pinned. On Windows, pin it from the puzzle menu instead.
+invoked on the tab, so the manifest declares `activeTab` and a `_execute_action`
+shortcut (`Ctrl+Shift+E`) alongside the toolbar button. Any real invocation
+works — click the icon or press the shortcut. Pin the icon from the puzzle menu
+if you would rather click.
+
+**After editing the code, reload the extension** on `chrome://extensions`.
+Chrome caches the service-worker script per profile, so a restart alone can keep
+serving the old file.
 
 ## Use it
 
@@ -56,8 +83,7 @@ pinned. On Windows, pin it from the puzzle menu instead.
 - **coach window**: the unrecorded window with the suggestion. On by default.
 - **Start recording** asks for the tab-capture stream and starts a `.webm`.
   The toolbar badge reads `REC`.
-- **Stop** from the popup or the coach window. Saved to Downloads as
-  `chesscan-<timestamp>.webm` (or `.mp4` where the browser only supports that).
+- **Stop** with Ctrl+Shift+S, or from any of the three windows.
 
 Keep the recorded tab visible. A background tab can be throttled by Chrome and
 the capture follows the tab's rendering.
@@ -67,6 +93,7 @@ the capture follows the tab's rendering.
 - pressing Stop;
 - closing the recorded tab;
 - navigating the recorded tab (the hide style would not exist on the new page);
+- closing the recorder window loses the video rather than stopping cleanly;
 - closing the coach window does **not** stop it, it only removes the readout.
 
 While recording, chesscan keeps running normally; only its layers are covered.
@@ -83,9 +110,9 @@ cd recorder && npm install && npm run test:live
 
 Needs `xdotool` on `$DISPLAY` and a fresh profile: the test presses
 `_execute_action`, because `tabCapture` refuses a synthetic `openPopup()`, and
-`suggested_key` is applied at install time. It asserts the tab hides, the coach
-shows a move, and a playable file lands in Downloads. `puppeteer-core` is the
-only dependency.
+`suggested_key` is applied at install time. It then stops with `Ctrl+Shift+S`.
+It asserts the tab hides, the recorder window runs, the coach shows a move, the
+state clears afterwards, and a file lands in Downloads.
 
 If the popup does not attach over CDP, the test falls back to clicking the Start
 button by coordinates, so it checks the flow rather than Chrome's popup plumbing.
@@ -94,12 +121,15 @@ For driving the popup from a script, append `?tab=<tabId>` to `popup.html` — i
 uses that tab instead of the active one. That path cannot capture, because it is
 not a real invocation.
 
+`test/debug.mjs` dumps the tab, the recorder window, the coach and the session
+state over CDP; handy when something misbehaves.
+
 ## Files
 
 | file | job |
 | --- | --- |
-| `src/background.js` | state, tab-capture handshake, hide style, coach window, download |
-| `src/offscreen.js` | `getUserMedia` on the capture stream, `MediaRecorder`, blob URL |
+| `src/background.js` | state, tab-capture handshake, hide style, both windows, download |
+| `src/record.html/js` | the recorder window: MediaRecorder, timer, Stop, Save |
 | `src/content.js` | hides chesscan's layers, mirrors the panel text |
 | `src/popup.html/js` | start/stop, options, timer |
 | `src/coach.html/js` | the unrecorded suggestion window |
@@ -108,7 +138,7 @@ not a real invocation.
 
 Whole-screen capture (`chrome.desktopCapture`) instead of the tab. It needs a
 picker and a different stream constraint, and it still cannot hide an overlay
-from the capture while showing it to you. The coach-window split is what makes
+from the capture while showing it to you. The split-window design is what makes
 this work; screen-vs-tab is a smaller change on top.
 
 Audio: the tab's sound is left alone on purpose. Adding system audio needs
