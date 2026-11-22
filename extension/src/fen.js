@@ -173,6 +173,20 @@ export function plausible(pieces) {
 }
 
 /**
+ * The FEN after `move`, with the en passant target kept when the move was a
+ * double pawn push. chess.js omits the target unless a capture is legal right
+ * now; the board still has one, and keeping it makes the FEN a faithful record
+ * of the position rather than of one engine's shorthand.
+ */
+function afterFen(move) {
+  const fields = move.after.split(" ");
+  if (move.piece === "p" && Math.abs(Number(move.to[1]) - Number(move.from[1])) === 2) {
+    fields[3] = `${move.from[0]}${(Number(move.from[1]) + Number(move.to[1])) / 2}`;
+  }
+  return fields.join(" ");
+}
+
+/**
  * Explain `pieces` as exactly one legal move from `fen`.
  *
  * Returns the resulting FEN, or null when no single legal move produces that
@@ -204,15 +218,40 @@ export function successorOf(fen, pieces) {
     if (found) return null;
     found = move;
   }
-  if (!found) return null;
-  const fields = found.after.split(" ");
-  // chess.js omits the en passant target unless a capture is legal right now.
-  // The board still has one after a double push, and keeping it makes the FEN a
-  // faithful record of the position rather than of one engine's shorthand.
-  if (found.piece === "p" && Math.abs(Number(found.to[1]) - Number(found.from[1])) === 2) {
-    fields[3] = `${found.from[0]}${(Number(found.from[1]) + Number(found.to[1])) / 2}`;
+  return found ? afterFen(found) : null;
+}
+
+/**
+ * Every placement reachable from `fen` in exactly `n` plies, mapped to the FEN
+ * that reaches it. Only one and two plies are enumerated: that is the gap a
+ * fast game leaves between ticks, and it is small enough to be proof rather
+ * than a guess. A placement reached by two different lines with different
+ * rights or targets is stored as null, so it is refused like an ambiguity.
+ */
+export function reachableIn(fen, n) {
+  if (!fen || (n !== 1 && n !== 2)) return null;
+  let game;
+  try {
+    game = new Chess(fen);
+  } catch {
+    return null;
   }
-  return fields.join(" ");
+  const out = new Map();
+  const add = (placement, value) => {
+    if (!out.has(placement)) out.set(placement, value);
+    else if (out.get(placement) !== value) out.set(placement, null);
+  };
+  for (const first of game.moves({ verbose: true })) {
+    if (n === 1) {
+      add(first.after.split(" ")[0], afterFen(first));
+      continue;
+    }
+    const mid = new Chess(first.after);
+    for (const second of mid.moves({ verbose: true })) {
+      add(second.after.split(" ")[0], afterFen(second));
+    }
+  }
+  return out;
 }
 
 /**

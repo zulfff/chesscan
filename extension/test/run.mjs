@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 import { Chess } from "chess.js";
 
-import { toFen, inferCastling, updateCastling, plausible, opponentInCheck, successorOf } from "../src/fen.js";
+import { toFen, inferCastling, updateCastling, plausible, opponentInCheck, successorOf, reachableIn } from "../src/fen.js";
 import { turnFromDiff, turnFromLastMove, enPassantFromDiff } from "../src/turn.js";
 import { squareFromTransform } from "../src/boards/chesscom.js";
 import { Humanizer, Form, SKILL, cpCeiling, thinkTime } from "../src/humanize.js";
@@ -158,6 +158,25 @@ function unitChecks() {
     "rnbqkbnr/ppp1pppp/3P4/8/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 2",
     "en passant is explained from the target, not guessed from placement",
   );
+
+  // Two plies are enumerated too: that is the gap a fast game leaves between
+  // ticks, and the set has to contain the real position while excluding a
+  // frame that is not reachable in two moves.
+  const two = reachableIn(`${START} w KQkq - 0 1`, 2);
+  assert.ok(two instanceof Map, "two plies must be enumerable");
+  assert.equal(
+    two.get(AFTER_E4_E5),
+    `${AFTER_E4_E5} w KQkq e6 0 2`,
+    "1.e4 e5 must be in the two-ply set with its target",
+  );
+  assert.equal(two.get(AFTER_E4), undefined, "one move is not a two-ply position");
+  assert.equal(
+    two.get("rnbqkbnr/pppppppp/8/8/4P3/8/PPPPPPPP/RNBQKBNR"),
+    undefined,
+    "a duplicated pawn is not reachable in two plies",
+  );
+  assert.equal(reachableIn(`${START} w KQkq - 0 1`, 3), null, "three plies are not enumerated");
+  assert.equal(reachableIn("not a fen", 2), null, "an invalid FEN has no reachable set");
 
   // A navigation jump changes too much to be a move.
   const other = fenPieces(CASTLED).reduce((acc, p) => {

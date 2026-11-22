@@ -9,6 +9,7 @@ import {
   plausible,
   opponentInCheck,
   successorOf,
+  reachableIn,
   FILES,
 } from "./fen.js";
 import { turnFromDiff, turnFromLastMove } from "./turn.js";
@@ -721,6 +722,16 @@ function fullmoveOf(ply) {
   return ply === null || ply === undefined ? 1 : Math.floor((ply + 1) / 2) + 1;
 }
 
+// Two-ply enumeration is a few hundred positions. Building it once per anchor
+// keeps a hold cheap while the board keeps changing underneath it.
+let twoPlyCache = { anchor: null, map: null };
+function twoPlyFrom(fen) {
+  if (twoPlyCache.anchor !== fen) {
+    twoPlyCache = { anchor: fen, map: reachableIn(fen, 2) ?? new Map() };
+  }
+  return twoPlyCache.map;
+}
+
 function resetForNavigation() {
   disarm("new page");
   state.lastUrl = location.href;
@@ -794,9 +805,11 @@ function tick() {
 
   // Explain the board as exactly one legal move from the last position we
   // accepted. A frame in flight — a piece drawn on two squares, a capture whose
-  // victim has not been removed yet, two moves between ticks — matches nothing,
-  // and is not allowed to become the new anchor.
+  // victim has not been removed yet — matches nothing, and is not allowed to
+  // become the new anchor.
   const successor = !same && state.anchorFen ? successorOf(state.anchorFen, board.pieces) : null;
+  let explained = successor;
+  let explainedPlies = successor ? 1 : 0;
 
   // The pieces did not change, so the placement is the same position. If the
   // list moved forward, the board is behind it: hold the last good read and let
@@ -810,40 +823,50 @@ function tick() {
   // A changed board with no legal explanation is a frame in flight until it has
   // held still. How long "still" has to be depends on what else we know:
   //
-  //   first read ............ nothing to compare against, take it
-  //   list jumped ............ the list states where the board is, one more look
-  //   one ply, or list behind  a frame is plausible, three looks
-  //   no list at all .......... no independent evidence, so never: a duplicated
-  //                             piece and two real moves look identical, and a
-  //                             wrong position is worse than a late one
+  //   first read ............. nothing to compare against, take it
+  //   one ply ................ a frame is plausible, three looks
+  //   two plies .............. enumerated exactly, once the board holds still
+  //   anything else, selected  the move list states the position, one more look
+  //   anything else, live ..... never: the list is the last move played, not
+  //                             necessarily the position on the board, and a
+  //                             wrong turn is worse than a late one
   //
   // A board that holds still has to be re-read on a timer, because the page
   // stops mutating the moment the animation ends; waiting for the next DOM
   // event would mean never accepting a real jump.
-  let fallback = false;
-  if (!same && !successor) {
+  if (!same && !explained) {
     const key = toFen(board.pieces, "w").split(" ")[0] + "|" + (ply ?? "");
     if (state.candidateKey === key) state.candidateHits++;
     else {
       state.candidateKey = key;
       state.candidateHits = 1;
     }
-    let need;
-    if (state.anchorFen === null) need = 1;
-    else if (step === null) need = ply === null ? Infinity : 2;
-    else if (step === 0) need = Infinity; // the list is behind: its turn is stale
-    else if (step === 1) need = 3;
-    else need = 2;
-    fallback = state.candidateHits >= need;
-    if (!fallback) {
-      if (Number.isFinite(need)) schedule(160);
-      refreshGeometry();
-      return;
+    // Two moves between ticks is the common bullet miss, and the one case a
+    // single successor cannot explain. Enumerating two plies is exact but costs
+    // tens of milliseconds, so it runs only after the board has held still
+    // once: while moves keep landing the panel holds instead of burning the
+    // page's thread on a position that is about to change again.
+    if (state.anchorFen && step !== null && step >= 2 && state.candidateHits >= 2) {
+      const hit = twoPlyFrom(state.anchorFen).get(toFen(board.pieces, "w").split(" ")[0]);
+      if (hit) {
+        explained = hit;
+        explainedPlies = 2;
+      }
     }
-  } else {
-    state.candidateKey = null;
-    state.candidateHits = 0;
+    if (!explained) {
+      let need;
+      if (state.anchorFen === null) need = 1;
+      else if (step === 1) need = 3;
+      else need = board.moveSelected ? 2 : Infinity;
+      if (state.candidateHits < need) {
+        if (Number.isFinite(need)) schedule(160);
+        refreshGeometry();
+        return;
+      }
+    }
   }
+  state.candidateKey = null;
+  state.candidateHits = 0;
 
   // Build the position. A legal successor carries its own turn, rights and en
   // passant target exactly. A jump or an unexplained read falls back to what is
@@ -874,11 +897,12 @@ function tick() {
     enPassant = null;
     nextPly = ply;
     fen = toFen(board.pieces, turn, { castling, enPassant, fullmove: fullmoveOf(nextPly) });
-  } else if (successor) {
-    // One legal move: the real turn is the successor's, and a manual "what if"
-    // flip ends here.
+  } else if (explained) {
+    // One legal move (or two, when the game outran the reader): the turn,
+    // rights and target are the position's own, and a manual "what if" flip
+    // ends here.
     state.manualTurn = null;
-    const [placement, succTurn, succCastling, succEp] = successor.split(" ");
+    const [placement, succTurn, succCastling, succEp] = explained.split(" ");
     realTurn = succTurn;
     turn = succTurn;
     castling = succCastling === "-" ? "" : succCastling;
@@ -886,7 +910,7 @@ function tick() {
     // Count the move we actually adopted, not the list's idea of it: when the
     // list runs a tick ahead the next same-board read has to hold. With no list
     // there is no move number to count from, so it stays unknown.
-    nextPly = state.ply === null ? (ply ?? null) : state.ply + 1;
+    nextPly = state.ply === null ? (ply ?? null) : state.ply + explainedPlies;
     fen = `${placement} ${succTurn} ${succCastling} ${succEp} 0 ${fullmoveOf(nextPly)}`;
   } else {
     // A jump (navigation, two moves between ticks) or an unexplained but stable
