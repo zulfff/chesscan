@@ -1,11 +1,29 @@
 # chesscan extension (chess.com)
 
-Reads the board straight from the chess.com page and shows a Stockfish panel:
-win probability, eval bar, the top three lines and the best-move arrow. No
-screen capture, no calibration, no network — the engine runs locally as WASM.
+Reads the board straight from the chess.com page and shows an analysis panel:
+win probability, eval bar, the top lines and the best-move arrow. No screen
+capture, no calibration. Search runs either on the chesscan server (a
+from-scratch engine with a human-like move picker) or, as a fallback, in the tab.
 
 For study and post-game review. Do not use it in rated online games: that is
 cheating and chess.com will ban the account.
+
+## Server mode
+
+Set **src** to `auto` or `server` and put the server's address in the gear menu.
+The panel then sends the FEN to the server and streams a line back at every
+depth. The server owns the search, the exact small-endgame solver and the
+humanizer, so the pick and the think time come back with the result.
+
+```bash
+cd ../server
+cargo build --release
+PORT=8787 ./target/release/chesscan-server
+```
+
+See `../server/README.md` for the protocol, the token setting and the solver
+limits. `auto` falls back to the bundled local engine when the server does not
+answer; `local` never touches the network.
 
 ## Install (load unpacked)
 
@@ -64,8 +82,11 @@ appears in the top-right; drag it by the `⠿` handle.
   the actual move instead of restarting at `1.` mid-game.
 - Clicking a line pins the arrow chain to that line; click it again to unpin.
   The pin follows the position and clears when the board changes.
-- Runs Stockfish 19 **lite, single-threaded** (1.8 MB WASM) at depth 18 with
-  MultiPV 3. Depth is adjustable 12–22.
+- **src** selector: `auto` (server when it answers, local engine otherwise),
+  `server`, or `local`. Server mode streams a line per depth and returns the
+  humanised pick and think time with the result.
+- Local mode runs the bundled engine at depth 12–22 with MultiPV 3 (12 for the
+  `max` preset). Depth is adjustable.
 - Draws the suggested line as an arrow chain over the board — one ply, two, or
   three (`pv` selector) — and the panel can be collapsed, closed (a pill reopens
   it), paused, or pointed at another depth.
@@ -146,6 +167,7 @@ useful advice for rated games — see the note at the top.
 | background | routes jobs to the engine host, maps job ids back to tabs |
 | offscreen document (Chrome) | hosts the engine `Worker` — MV3 service workers have no `Worker` constructor |
 | background page (Firefox) | hosts the engine itself, since it is a real window |
+| chesscan server (optional) | owns the search, exact solver and humanizer; the tab streams NDJSON from it |
 
 Chrome and Firefox therefore need different `background` declarations, which is
 why the build emits two folders. Engine replies go through the background with
@@ -305,7 +327,8 @@ browser you already have open. It is manual, not part of `npm test`.
   **flip** if it is wrong. Without a list, an unexplained board is never
   adopted, so a board that changes in a way no legal move explains stays on the
   last good read until the page settles or navigates.
-- The lite engine is much weaker than full Stockfish, and runs without threads.
+- In local mode the bundled engine is weaker than a full-strength engine and
+  runs single-threaded. Server mode uses the Rust engine in `../server`.
 - Only the top frame is scanned, and only one board (the largest visible).
 - Wayland/X11 are irrelevant here: everything is DOM, so it works on any OS
   Chrome or Firefox runs on.

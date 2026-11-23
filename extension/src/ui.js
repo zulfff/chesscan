@@ -12,6 +12,11 @@ const PLAYS = [
   ["master", "master"],
   ["max", "max"],
 ];
+const SRCS = [
+  ["auto", "auto"],
+  ["server", "server"],
+  ["local", "local"],
+];
 const WIDTH = 318;
 
 // Static, compile-time markup: no page or user data is interpolated here.
@@ -19,7 +24,7 @@ const MARKUP = `
       <div class="panel" data-collapsed="false" role="complementary" aria-label="chesscan analysis">
         <header class="head" id="drag">
           <span class="grip" aria-hidden="true">&#10303;</span>
-          <span class="brand" title="Stockfish 19 lite, running locally">chesscan</span>
+          <span class="brand" title="Live analysis of the board you are looking at">chesscan</span>
           <span class="site" id="site"></span>
           <span class="live" id="live" title="searching"></span>
           <span class="prob" id="prob">&mdash;</span>
@@ -39,8 +44,14 @@ const MARKUP = `
           </div>
           <div class="bar sub">
             <label class="depth">play<select id="play" aria-label="How human-like the suggested move should be" title="Pick moves the way a player of this rating would, or max for full engine strength"></select></label>
+            <label class="depth">src<select id="src" aria-label="Where the search runs" title="auto: use the server when it answers, otherwise the local engine. server: always ask the server. local: always search in this tab"></select></label>
+            <button class="btn icon" id="cfg" aria-label="Server settings" title="Server address and token">&#9881;</button>
             <label class="depth">pv<select id="pv" aria-label="How many plies of the suggested line to draw" title="How many plies of the suggested line to draw on the board"></select></label>
             <span class="why" id="why" aria-live="polite"></span>
+          </div>
+          <div class="bar sub cfg" id="cfgrow" hidden>
+            <label class="depth grow">url<input id="serverUrl" type="url" placeholder="http://127.0.0.1:8787" aria-label="Server URL"></label>
+            <label class="depth grow">token<input id="serverToken" type="password" placeholder="optional" aria-label="Server token"></label>
           </div>
           <div class="bar sub auto">
             <button class="btn" id="auto" aria-pressed="false" title="Play the suggested move on the board, one move at a time. Testing only: off by default, never remembered, stops when you leave the page.">autoplay</button>
@@ -95,6 +106,11 @@ export class Panel {
       guide: $("guide"),
       depth: $("depth"),
       play: $("play"),
+      src: $("src"),
+      cfg: $("cfg"),
+      cfgrow: $("cfgrow"),
+      serverUrl: $("serverUrl"),
+      serverToken: $("serverToken"),
       pv: $("pv"),
       why: $("why"),
       auto: $("auto"),
@@ -131,6 +147,13 @@ export class Panel {
       this.el.play.appendChild(o);
     }
 
+    for (const [value, label] of SRCS) {
+      const o = document.createElement("option");
+      o.value = value;
+      o.textContent = label;
+      this.el.src.appendChild(o);
+    }
+
     for (const n of [1, 2, 3]) {
       const o = document.createElement("option");
       o.value = String(n);
@@ -144,6 +167,10 @@ export class Panel {
     this.el.flip.addEventListener("click", () => this.h.onFlip());
     this.el.guide.addEventListener("change", () => this.h.onGuide(this.el.guide.value));
     this.el.play.addEventListener("change", () => this.h.onPlay(this.el.play.value));
+    this.el.src.addEventListener("change", () => this.h.onSrc(this.el.src.value));
+    this.el.cfg.addEventListener("click", () => this.h.onConfigToggle());
+    this.el.serverUrl.addEventListener("change", () => this.h.onServerUrl(this.el.serverUrl.value.trim()));
+    this.el.serverToken.addEventListener("change", () => this.h.onServerToken(this.el.serverToken.value.trim()));
     this.el.pv.addEventListener("change", () => this.h.onPv(Number(this.el.pv.value)));
     this.el.pause.addEventListener("click", () => this.h.onPause());
     this.el.auto.addEventListener("click", () => this.h.onAutoplay());
@@ -246,6 +273,19 @@ export class Panel {
 
   setPlayMode(mode) {
     this.el.play.value = mode || "off";
+  }
+
+  setSrc(src) {
+    this.el.src.value = src || "auto";
+  }
+
+  setConfigVisible(visible) {
+    this.el.cfgrow.hidden = !visible;
+  }
+
+  setServerConfig({ url, token } = {}) {
+    if (url !== undefined) this.el.serverUrl.value = url;
+    if (token !== undefined) this.el.serverToken.value = token;
   }
 
   /** How many plies of the suggested line the arrow chain draws. */

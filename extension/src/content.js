@@ -15,6 +15,7 @@ import {
 import { turnFromDiff, turnFromLastMove } from "./turn.js";
 import { winProbability, whiteScore, formatScore } from "./engine.js";
 import { RemoteEngine } from "./remote-engine.js";
+import { ServerEngine } from "./server-engine.js";
 import { Humanizer, Form, SKILL, thinkTime } from "./humanize.js";
 import { legalMove, playMoveHuman, promoteQueen } from "./autoplay.js";
 import { Panel } from "./ui.js";
@@ -29,6 +30,10 @@ const DEFAULTS = {
   running: true,
   collapsed: false,
   pos: null,
+  // "auto" uses the server when it answers, else the local engine.
+  src: "auto",
+  serverUrl: "",
+  serverToken: "",
 };
 
 const state = {
@@ -69,6 +74,9 @@ const state = {
   autoPrevPlay: null, // play mode borrowed for the session, given back on disarm
   positionAt: 0, // when the current position appeared: thinking starts here
   lastMove: null, // highlighted squares of the move just played
+  server: null, // ServerEngine, created at boot
+  serverHealthy: null, // null = not probed yet
+  recentFens: [], // recent accepted positions, for threefold repetition
 };
 
 // A testing harness, not a ladder bot: one arming plays at most this many moves.
@@ -329,6 +337,46 @@ engine.onError = err => {
   hideArrow();
 };
 
+const server = new ServerEngine();
+server.onError = err => {
+  console.warn(LOG, "server error", err);
+  state.engineError = `Server: ${err.message}`;
+  panel.setStatus(state.engineError);
+  panel.setSearching(false);
+  state.pvUci = null;
+  hideArrow();
+  // A dead server should not be retried on every tick in auto mode.
+  state.serverHealthy = false;
+};
+
+function useServer() {
+  const src = state.settings?.src ?? "auto";
+  if (src === "server") return true;
+  if (src === "local") return false;
+  return state.serverHealthy === true;
+}
+
+/** The humaniser parameters the server should use, if any. */
+function playRequest() {
+  const key = state.settings?.play ?? "off";
+  if (key === "max" || key === "off") return { mode: key };
+  const profile = state.human?.profile;
+  return {
+    mode: key,
+    elo: profile?.elo,
+    aggression: profile?.aggression,
+    brilliancy: profile?.brilliancy,
+    mistake: profile?.mistake,
+  };
+}
+
+function rememberFen(fen) {
+  const list = state.recentFens;
+  if (list[list.length - 1] === fen) return;
+  list.push(fen);
+  if (list.length > 60) list.shift();
+}
+
 // --- human-like move selection ---------------------------------------------
 
 // Four candidates, because a person is usually choosing between three or four
@@ -394,10 +442,15 @@ function pickMove(lines, fen, turn) {
   return h.pick;
 }
 
-function renderLines(lines, fen, turn) {
+function renderLines(lines, fen, turn, pickOverride = null) {
   state.engineError = null;
   state.lastRender = { lines, fen, turn };
-  const pick = pickMove(lines, fen, turn);
+  let pick = pickOverride;
+  if (pick) {
+    // The server already chose; keep the display model in step with it.
+    state.human = { fen, profile: { elo: pick.elo }, pick };
+  }
+  pick = pick ?? pickMove(lines, fen, turn);
   const rows = [];
   let win = null;
   const count = maxStrength() ? MAX_MULTIPV : hasProfile() ? HUMAN_MULTIPV : 3;
@@ -438,6 +491,31 @@ function analyze(fen, turn) {
   const gen = ++state.searchGen;
   state.settled = false;
   panel.setSearching(true);
+  rememberFen(fen);
+
+  if (useServer()) {
+    server.lastDone = null;
+    server.analyze(fen, {
+      depth: maxStrength() ? Math.max(state.settings.depth, MAX_DEPTH) : state.settings.depth,
+      multipv: maxStrength() ? MAX_MULTIPV : hasProfile() ? HUMAN_MULTIPV : 3,
+      timeMs: 4000,
+      play: playRequest(),
+      seed: `${fen}:${state.ply ?? 0}`,
+      history: state.recentFens.slice(-40),
+      onLines: lines => {
+        if (gen !== state.searchGen) return;
+        renderLines(lines, fen, turn);
+      },
+      onDone: (lines, meta) => {
+        if (gen !== state.searchGen) return;
+        state.settled = true;
+        panel.setSearching(false);
+        renderLines(lines, fen, turn, meta?.pick ?? null);
+      },
+    });
+    return;
+  }
+
   engine.analyze(fen, {
     depth: maxStrength() ? Math.max(state.settings.depth, MAX_DEPTH) : state.settings.depth,
     multipv: maxStrength() ? MAX_MULTIPV : hasProfile() ? HUMAN_MULTIPV : 3,
@@ -564,6 +642,9 @@ function autoplayDelay(fen, uci, lines, turn) {
 
   const elo = state.human?.profile?.elo ?? 1400;
   if (recapture) return Math.max(250, 380 + Math.random() * 520 - (Date.now() - state.positionAt));
+  // When the server already priced the thought, use its number.
+  const priced = server.lastDone?.pick?.think_ms;
+  if (priced) return Math.max(250, priced - (Date.now() - state.positionAt));
   let think = thinkTime({ elo, branching, instability: inst, forced });
   // A find you did not see at first costs time; a slip is usually played
   // quickly, because it looked right at a glance.
@@ -751,6 +832,7 @@ function resetForNavigation() {
   state.ply = null;
   state.linePick = null;
   state.lastRender = null;
+  state.recentFens = [];
   state.searchGen++;
 }
 
@@ -1058,6 +1140,43 @@ const panel = new Panel({
     state.fen = null;
     tick();
   },
+  onSrc(src) {
+    state.settings.src = src;
+    panel.setSrc(src);
+    saveSettings();
+    state.serverHealthy = null;
+    server.ping().then(ok => {
+      state.serverHealthy = ok;
+      if (src === "server" && !ok) panel.setStatus("server unreachable");
+      else if (ok) panel.setStatus("server ready");
+    }).catch(() => {
+      state.serverHealthy = false;
+    });
+    state.fen = null;
+    tick();
+  },
+  onConfigToggle() {
+    panel.setConfigVisible(panel.el.cfgrow.hidden);
+  },
+  onServerUrl(url) {
+    state.settings.serverUrl = url;
+    saveSettings();
+    server.configure({ url: url || undefined });
+    state.serverHealthy = null;
+    server.ping().then(ok => {
+      state.serverHealthy = ok;
+      panel.setStatus(ok ? "server ready" : "server unreachable");
+      if (ok && (state.settings.src ?? "auto") !== "local") {
+        state.fen = null;
+        tick();
+      }
+    });
+  },
+  onServerToken(token) {
+    state.settings.serverToken = token;
+    saveSettings();
+    server.configure({ token: token || undefined });
+  },
   onPv(count) {
     state.settings.pv = count;
     panel.setPv(count);
@@ -1136,6 +1255,7 @@ async function boot() {
   panel.setDepth(state.settings.depth);
   panel.setGuide(state.settings.guide);
   panel.setPlayMode(state.settings.play);
+  panel.setSrc(state.settings.src);
   panel.setPv(state.settings.pv);
   panel.setPaused(!state.settings.running);
   panel.setAutoplay(false, "");
@@ -1143,6 +1263,25 @@ async function boot() {
   panel.pos = state.settings.pos;
   panel.place(panel.pos);
   panel.hide();
+
+  state.server = server;
+  server.configure({
+    url: state.settings.serverUrl || undefined,
+    token: state.settings.serverToken || undefined,
+  });
+  panel.setServerConfig({
+    url: state.settings.serverUrl,
+    token: state.settings.serverToken,
+  });
+  panel.setConfigVisible(state.settings.src === "server");
+  if ((state.settings.src ?? "auto") !== "local") {
+    server.ping().then(ok => {
+      state.serverHealthy = ok;
+      if (ok && state.settings.src === "auto") panel.setStatus("server ready");
+    }).catch(() => {
+      state.serverHealthy = false;
+    });
+  }
 
   observer.observe(document.documentElement, {
     childList: true,

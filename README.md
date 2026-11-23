@@ -9,11 +9,26 @@ that is cheating, and every site will ban you for it.
 ## Browser extension (chess.com)
 
 A separate, self-contained extension lives in `extension/`. It reads the board
-straight from the chess.com DOM, runs Stockfish WASM locally and shows the same
-eval/win% panel with a best-move arrow — no screen capture, no calibration.
-A **play** selector can also pick the suggested move the way a player of a
-given rating would, rather than the way the engine would.
-See `extension/README.md`.
+straight from the chess.com DOM and shows the same eval/win% panel with a
+best-move arrow — no screen capture, no calibration. A **play** selector can
+also pick the suggested move the way a player of a given rating would, rather
+than the way the engine would. Search runs either on the chesscan server or on
+a bundled local engine. See `extension/README.md`.
+
+## Remote analysis server
+
+`server/` is a from-scratch chess engine in Rust with an HTTP endpoint the
+extension streams from: alpha-beta search, an exact solver for small endgames,
+and a deterministic humanizer that picks moves the way a rated player would.
+No UCI, no Stockfish, no borrowed evaluation.
+
+```bash
+cd server
+cargo build --release
+PORT=8787 ./target/release/chesscan-server
+```
+
+See `server/README.md` for the protocol and configuration.
 
 ## Install on Fedora
 

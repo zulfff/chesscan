@@ -166,6 +166,19 @@ export const CSS = `
   cursor: pointer;
 }
 .depth select:focus-visible { outline: 2px solid #d7b061; outline-offset: 1px; }
+.depth.grow { flex: 1; min-width: 0; }
+.depth input {
+  flex: 1; min-width: 0;
+  background: #23262c;
+  border: 1px solid #2b2f36;
+  border-radius: 5px;
+  color: #c9cdd4;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 5px;
+}
+.depth input:focus-visible { outline: 2px solid #d7b061; outline-offset: 1px; }
+.bar.sub.cfg { gap: 4px; }
 
 .pill {
   position: fixed;
