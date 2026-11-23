@@ -1,5 +1,5 @@
-// Entry point: find a board, turn it into a FEN, ask Stockfish, paint the panel.
-// Runs on chess.com; everything stays local to the browser.
+// Entry point: find a board, turn it into a FEN, ask the search (server first,
+// local engine as fallback), paint the panel. Runs on chess.com.
 
 import { Chess } from "chess.js";
 import { readChesscom } from "./boards/chesscom.js";

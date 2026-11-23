@@ -1,6 +1,6 @@
 // Human-like move selection over a MultiPV search.
 //
-// Stockfish tells you the truth. Humans tell you what a depth-6 look at the
+// The engine tells you the truth. Humans tell you what a depth-6 look at the
 // board says, filtered through a mood. This module sits between the two:
 // it takes the engine's ranked lines and picks one the way a person with a
 // rating would, not the way a 3500 Elo search would.

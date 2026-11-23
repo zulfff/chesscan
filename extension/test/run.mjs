@@ -326,6 +326,11 @@ async function waitFen(page, expected, timeout = 20000) {
     { timeout },
     expected,
   );
+  // Keep the suite hermetic: a chesscan server on this machine would otherwise
+  // be picked up by the panel's "auto" source and answers would come from it.
+  await page.evaluate(
+    panelEval(`s => { const sel = s.getElementById('src'); if (sel && sel.value !== 'local') { sel.value = 'local'; sel.dispatchEvent(new Event('change', { bubbles: true })); } }`),
+  ).catch(() => {});
 }
 
 async function waitLines(page, timeout = 60000) {
