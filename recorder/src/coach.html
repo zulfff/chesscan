@@ -12,56 +12,73 @@
         --muted: #98a0a9;
         --gold: #d7b061;
         --red: #c4443a;
+        --sq-light: #ebecd0;
+        --sq-dark: #739552;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        padding: 14px 16px;
+        padding: 12px 14px 14px;
         background: var(--bg);
         color: var(--ink);
-        font: 13px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
       }
       header { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
       h1 { margin: 0; font-size: 11px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
       .rec { color: var(--red); font-weight: 700; letter-spacing: .08em; }
       .time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+
+      .top { display: flex; gap: 12px; align-items: flex-start; margin-top: 10px; }
+      .board {
+        position: relative;
+        width: 168px;
+        height: 168px;
+        flex: 0 0 auto;
+        border-radius: 4px;
+        overflow: hidden;
+        background: var(--sq-light);
+      }
+      #grid { display: grid; grid-template-columns: repeat(8, 1fr); grid-template-rows: repeat(8, 1fr); width: 100%; height: 100%; }
+      #grid span { display: grid; place-items: center; font-size: 16px; line-height: 1; user-select: none; }
+      #grid .l { background: var(--sq-light); }
+      #grid .d { background: var(--sq-dark); }
+      #arrow { position: absolute; inset: 0; pointer-events: none; }
+
+      .side { min-width: 0; flex: 1; }
       .move {
-        margin: 8px 0 0;
-        font-size: 44px;
+        font-size: 40px;
         font-weight: 750;
         letter-spacing: -.02em;
         color: var(--gold);
         line-height: 1.05;
+        word-break: break-word;
       }
       .meta {
         display: flex;
         flex-wrap: wrap;
-        gap: 4px 10px;
+        gap: 3px 9px;
         align-items: baseline;
-        min-height: 18px;
-        font-size: 12px;
+        margin-top: 2px;
+        font-size: 11px;
         color: var(--muted);
       }
       .score { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--ink); }
       .pv {
         margin: 8px 0 0;
-        padding: 7px 9px;
+        padding: 6px 8px;
         border: 1px solid var(--line);
         border-radius: 7px;
         background: var(--card);
-        color: var(--ink);
-        font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+        color: var(--muted);
+        font: 10.5px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
         word-break: break-word;
       }
-      .alts { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+      .alts { margin: 8px 0 0; padding: 0; list-style: none; display: flex; gap: 6px; flex-wrap: wrap; }
       .alts li {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
-        padding: 5px 8px;
+        padding: 3px 8px;
         border: 1px solid var(--line);
         border-radius: 6px;
-        font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
         color: var(--muted);
       }
       .alts .san { color: var(--ink); }
@@ -71,10 +88,10 @@
         font: 9px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
         word-break: break-all;
       }
-      .hint { margin: 8px 0 0; color: var(--muted); font-size: 11px; min-height: 15px; }
+      .hint { margin: 6px 0 0; color: var(--muted); font-size: 11px; min-height: 14px; }
       button {
         width: 100%;
-        margin-top: 10px;
+        margin-top: 8px;
         padding: 8px 12px;
         border: 0;
         border-radius: 8px;
@@ -95,14 +112,22 @@
       <span class="time" id="time">00:00</span>
     </header>
 
-    <div class="move" id="move">—</div>
-    <div class="meta">
-      <span class="score" id="score"></span>
-      <span id="prob"></span>
-      <span id="turn"></span>
+    <div class="top">
+      <div class="board">
+        <div id="grid"></div>
+        <svg id="arrow" viewBox="0 0 168 168" aria-hidden="true"></svg>
+      </div>
+      <div class="side">
+        <div class="move" id="move">—</div>
+        <div class="meta">
+          <span class="score" id="score"></span>
+          <span id="prob"></span>
+          <span id="turn"></span>
+        </div>
+        <p class="pv" id="pvline"></p>
+      </div>
     </div>
 
-    <p class="pv" id="pvline"></p>
     <ul class="alts" id="alts"></ul>
     <p class="fen" id="fen"></p>
     <p class="hint" id="hint">waiting for chesscan…</p>

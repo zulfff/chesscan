@@ -1,76 +1,45 @@
 import puppeteer from "puppeteer-core";
 
-const sleep = ms => new Promise(r => setTimeout(r, ms));
 const browser = await puppeteer.connect({ browserURL: "http://127.0.0.1:9222", defaultViewport: null });
-
-let attached = false;
-for (let i = 0; i < 40 && !attached; i += 1) {
-  const t = browser.targets().find(t => t.type() === "service_worker" && /src\/background\.js/.test(t.url()));
-  if (t) {
-    const cdp = await t.createCDPSession();
-    await cdp.send("Runtime.enable");
-    await cdp.send("Log.enable");
-    cdp.on("Runtime.exceptionThrown", e =>
-      console.log("SW EXC:", JSON.stringify(e.exceptionDetails?.exception?.description || e.exceptionDetails?.text)),
-    );
-    cdp.on("Log.entryAdded", e => console.log("LOG:", e.entry.level, e.entry.text.slice(0, 300)));
-    attached = true;
-  }
-  await sleep(250);
+const game = (await browser.pages()).find(p => /chess\.com/.test(p.url()));
+const coach = (await browser.pages()).find(p => p.url().includes("/src/coach.html"));
+if (!game || !coach) {
+  console.log("missing page", !!game, !!coach);
+  await browser.disconnect();
+  process.exit(1);
 }
 
-for (const pg of await browser.pages()) {
-  const url = pg.url();
-  if (url.includes("/src/record.html")) {
-    console.log(
-      "RECORD:",
-      JSON.stringify(
-        await pg.evaluate(() => ({
-          status: document.getElementById("status").textContent,
-          time: document.getElementById("time").textContent,
-          stopDisabled: document.getElementById("stop").disabled,
-          saveHidden: document.getElementById("save").hidden,
-        })),
-      ),
-    );
-  }
-  if (url.includes("/src/popup.html")) {
-    console.log(
-      "POPUP:",
-      JSON.stringify(
-        await pg.evaluate(() => ({
-          status: document.getElementById("status").textContent,
-          disabled: document.getElementById("go").disabled,
-          label: document.getElementById("go").textContent,
-        })),
-      ),
-    );
-  }
-  if (/chess\.com/.test(url)) {
-    console.log(
-      "TAB:",
-      JSON.stringify(
-        await pg.evaluate(() => {
-          const host = document.getElementById("chesscan-ext-root");
-          const arrow = document.getElementById("chesscan-arrow-layer");
-          return {
-            panel: host ? getComputedStyle(host).display : "missing",
-            arrow: arrow ? getComputedStyle(arrow).display : "missing",
-            style: !!document.getElementById("chesscan-rec-hide"),
-          };
-        }),
-      ),
-    );
-  }
-}
-
-const swTarget = browser.targets().find(t => t.type() === "service_worker" && /src\/background\.js/.test(t.url()));
-if (swTarget) {
-  const worker = await swTarget.worker();
+const dump = async label =>
   console.log(
-    "STATE:",
-    JSON.stringify(await worker.evaluate(async () => (await chrome.storage.session.get("recorder")).recorder ?? null)),
+    label,
+    JSON.stringify(
+      await coach.evaluate(() => ({
+        move: document.getElementById("move").textContent,
+        squares: document.querySelectorAll("#grid span").length,
+        first: [...document.querySelectorAll("#grid span")][0].dataset.square,
+        last: [...document.querySelectorAll("#grid span")].at(-1).dataset.square,
+        line: (() => {
+          const l = document.querySelector("#arrow line");
+          return l ? `${l.getAttribute("x1")},${l.getAttribute("y1")} -> ${l.getAttribute("x2")},${l.getAttribute("y2")}` : "none";
+        })(),
+        hint: document.getElementById("hint").textContent,
+      })),
+    ),
   );
-}
-await sleep(500);
+
+const flip = () =>
+  game.evaluate(() => {
+    const btn = [...document.querySelectorAll("button")].find(b => b.getAttribute("aria-label") === "Flip Board");
+    if (!btn) return false;
+    btn.click();
+    return true;
+  });
+
+await dump("normal:   ");
+console.log("flip clicked:", await flip());
+await new Promise(r => setTimeout(r, 1500));
+await dump("flipped:  ");
+
+// Restore so the board is left as found.
+await flip();
 await browser.disconnect();

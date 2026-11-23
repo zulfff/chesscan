@@ -80,7 +80,7 @@ async function openWindow(url, { width, height, left, top }) {
 
 async function openCoach(state) {
   try {
-    const { windowId, tabId } = await openWindow(COACH, { width: 340, height: 420, left: 20, top: 250 });
+    const { windowId, tabId } = await openWindow(COACH, { width: 340, height: 520, left: 20, top: 250 });
     state.coachWindowId = windowId;
     state.coachTabId = tabId;
   } catch {

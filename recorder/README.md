@@ -17,29 +17,33 @@ chesscan:
 
 Nothing is imported, so either extension can be updated without the other.
 
-## The honest limitation
+## The compromise, and how it is paid
 
 A tab capture is pixels. There is no way to show an overlay on screen and hide
 that same overlay from a capture of that screen — if you can see it, the
-recorder can too.
+recorder can too. Neither Chrome's `tabCapture` nor `getDisplayMedia` has a
+"capture everything except this element" switch, element-level `captureStream`
+is not available in Chrome, and extension windows cannot be transparent.
 
 So while recording, the arrow and the panel are hidden **in the tab**. To keep
 the suggestion usable, the recorder opens a **coach window**: a separate browser
-window showing the move to play, its score, how sure chesscan is, and the next
-lines. A separate window is not part of the tab, so it never appears in the
-video. Put it beside the board, read the move, play it.
+window that re-draws what was hidden — a board built from chesscan's FEN with an
+arrow on the best move (from the line's UCI), its score, how sure chesscan is,
+and the next lines. A separate window is not part of the tab, so it never appears
+in the video.
 
-That is the trade: clean video, suggestion one window over.
+That is the trade: clean video, and the arrow one window over instead of on your
+board. Both windows are ordinary, movable, resizable — arrange them as you like.
 
-The move shown is the first SAN of chesscan's best line (its panel lists whole
-principal variations). Alternatives show the first move and the score.
+The coach mirrors your board orientation, read off chess.com's rank labels
+(its board is one SVG, so there is no square DOM to inspect).
 
 ## Two windows, one job
 
 | window | holds |
 | --- | --- |
 | **recorder** (top-left) | the timer, Stop, and the video itself |
-| **coach** (below it) | the suggestion, never recorded |
+| **coach** (below it) | board + arrow + suggestion, never recorded |
 
 MediaRecorder lives in the recorder window because a service worker is killed
 after ~30 s idle and an offscreen document goes down with it. A plain extension

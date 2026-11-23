@@ -43,9 +43,22 @@ function applyHide() {
   if (style.textContent !== css) style.textContent = css;
 }
 
+// chess.com renders its board as one SVG, so the rank labels are the only way
+// to tell which way round the user's board is. White at the bottom means rank 8
+// sits above rank 1.
+function boardFlipped() {
+  const board = document.querySelector("wc-chess-board");
+  const labels = [...(board?.querySelectorAll("svg.coordinates text") ?? [])];
+  const byRank = rank => labels.find(el => el.textContent.trim() === String(rank));
+  const eight = byRank(8);
+  const one = byRank(1);
+  if (!eight || !one) return false;
+  return eight.getBoundingClientRect().top > one.getBoundingClientRect().top;
+}
+
 function snapshot() {
   const root = document.getElementById(PANEL_ID)?.shadowRoot;
-  if (!root) return { present: false, url: location.href };
+  if (!root) return { present: false, url: location.href, flipped: boardFlipped() };
 
   const text = id => root.getElementById(id)?.textContent?.trim() ?? "";
   const lines = [...root.querySelectorAll("#lines li")]
@@ -68,6 +81,7 @@ function snapshot() {
     why: text("why"),
     prob: text("prob"),
     status: text("status"),
+    flipped: boardFlipped(),
     lines,
   };
 }
