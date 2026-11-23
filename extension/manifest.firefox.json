@@ -3,7 +3,7 @@
   "name": "chesscan",
   "version": "0.1.0",
   "description": "Local Stockfish analysis for the board you are looking at on chess.com.",
-  "permissions": ["storage"],
+  "permissions": ["storage", "http://localhost/*", "http://127.0.0.1/*", "https://*/*"],
   "background": { "scripts": ["dist/background.js"] },
   "content_scripts": [
     {
