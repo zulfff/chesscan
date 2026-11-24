@@ -16,6 +16,13 @@ const EG_VALUE: [i32; 6] = [94, 281, 297, 512, 936, 0];
 const PHASE_WEIGHT: [i32; 6] = [0, 1, 1, 2, 4, 0];
 const MAX_PHASE: i32 = 24;
 
+/// Rough opening material value of a piece type, used by the search for
+/// capture pruning. Deliberately coarse: it only has to be within a safe
+/// margin of the real values.
+pub fn victim_value(pt: usize) -> i32 {
+    MG_VALUE[pt]
+}
+
 const MG_PAWN: [i32; 64] = [
     0, 0, 0, 0, 0, 0, 0, 0, //
     0, 0, 0, 0, 0, 0, 0, 0, //

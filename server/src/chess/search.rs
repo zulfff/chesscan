@@ -268,6 +268,21 @@ impl Searcher {
         let alpha_orig = alpha;
 
         for (i, m) in ordered.iter().enumerate() {
+            // Futility pruning: late quiet moves at shallow depth cannot raise
+            // alpha when the static eval is far below it, so skip the make/unmake
+            // entirely. Never prune when a mate or a forced line is in play.
+            if !pv_node
+                && !in_check
+                && depth <= 3
+                && i > 0
+                && !board.is_capture(*m)
+                && !m.is_promotion()
+                && alpha > -MATE_THRESHOLD
+                && alpha < MATE_THRESHOLD
+                && evaluate(board) + 120 * depth <= alpha
+            {
+                continue;
+            }
             let undo = board.make_move(*m);
             self.path.push(board.hash);
 
@@ -379,6 +394,26 @@ impl Searcher {
         let mut best = stand;
         for (_, m) in scored[..n].iter() {
             let m = *m;
+            // Delta pruning: a capture that cannot lift the score above alpha
+            // even with the victim's full value is hopeless. The 200 margin
+            // absorbs the piece-square difference and keeps promotions in.
+            if !in_check {
+                let mut gain = if m.kind() == KIND_EP {
+                    super::eval::victim_value(PAWN)
+                } else {
+                    board
+                        .piece_at(m.to())
+                        .map(|(_, pt)| super::eval::victim_value(pt))
+                        .unwrap_or(super::eval::victim_value(PAWN))
+                };
+                if m.is_promotion() {
+                    gain += super::eval::victim_value(m.promo() as usize)
+                        - super::eval::victim_value(PAWN);
+                }
+                if stand + gain + 200 <= alpha {
+                    continue;
+                }
+            }
             let undo = board.make_move(m);
             let score = -self.qsearch(board, -beta, -alpha, ply + 1);
             board.unmake_move(m, &undo);
