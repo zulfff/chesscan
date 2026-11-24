@@ -85,7 +85,12 @@ export function readMoveList(boardEl, doc = document) {
     : node.classList.contains("black-move")
       ? "w"
       : null;
-  return { ply: index, turn };
+  // The full SAN line, in order: the raw material for the post-game review.
+  // Annotation marks (`!`, `?`, `#`) are stripped by the converter.
+  const sans = nodes
+    .map(n => n.textContent?.trim())
+    .filter(t => t);
+  return { ply: index, turn, sans };
 }
 
 export function readChesscom() {

@@ -49,6 +49,10 @@ const MARKUP = `
             <label class="depth">pv<select id="pv" aria-label="How many plies of the suggested line to draw" title="How many plies of the suggested line to draw on the board"></select></label>
             <span class="why" id="why" aria-live="polite"></span>
           </div>
+          <div class="bar sub review">
+            <button class="btn" id="review" title="Send the finished game to the server for a full-game review: accuracy and every mistake tagged">review game</button>
+            <span class="autoinfo" id="reviewinfo" aria-live="polite"></span>
+          </div>
           <div class="bar sub cfg" id="cfgrow" hidden>
             <label class="depth grow">url<input id="serverUrl" type="url" placeholder="http://127.0.0.1:8787" aria-label="Server URL"></label>
             <label class="depth grow">token<input id="serverToken" type="password" placeholder="optional" aria-label="Server token"></label>
@@ -109,6 +113,8 @@ export class Panel {
       src: $("src"),
       cfg: $("cfg"),
       cfgrow: $("cfgrow"),
+      review: $("review"),
+      reviewinfo: $("reviewinfo"),
       serverUrl: $("serverUrl"),
       serverToken: $("serverToken"),
       pv: $("pv"),
@@ -169,6 +175,7 @@ export class Panel {
     this.el.play.addEventListener("change", () => this.h.onPlay(this.el.play.value));
     this.el.src.addEventListener("change", () => this.h.onSrc(this.el.src.value));
     this.el.cfg.addEventListener("click", () => this.h.onConfigToggle());
+    this.el.review.addEventListener("click", () => this.h.onReview?.());
     this.el.serverUrl.addEventListener("change", () => this.h.onServerUrl(this.el.serverUrl.value.trim()));
     this.el.serverToken.addEventListener("change", () => this.h.onServerToken(this.el.serverToken.value.trim()));
     this.el.pv.addEventListener("change", () => this.h.onPv(Number(this.el.pv.value)));
@@ -281,6 +288,47 @@ export class Panel {
 
   setConfigVisible(visible) {
     this.el.cfgrow.hidden = !visible;
+  }
+
+  /** Review button state: idle, running (disabled) with a progress note, or an error note. */
+  setReview(on, note) {
+    this.el.review.setAttribute("aria-pressed", on ? "true" : "false");
+    this.el.review.disabled = !!on;
+    this.el.review.textContent = on ? "reviewing…" : "review game";
+    this.el.reviewinfo.textContent = note || "";
+    this.el.reviewinfo.classList.toggle("stopped", !on && !!note);
+  }
+
+  /**
+   * The finished report, in the line list: one row per tagged move, the
+   * summary line at the top. rows: [{san, tag, loss, accuracy, eval}].
+   */
+  setReviewReport({ accuracy, counts, game_over: over, rows }) {
+    const fmt = n => `${Math.round(n)}%`;
+    const head = `accuracy W ${fmt(accuracy.white)} · B ${fmt(accuracy.black)}`;
+    const parts = [];
+    if (counts.white.blunder + counts.black.blunder) parts.push(`${counts.white.blunder + counts.black.blunder} blunder`);
+    if (counts.white.mistake + counts.black.mistake) parts.push(`${counts.white.mistake + counts.black.mistake} mistake`);
+    if (counts.white.inaccuracy + counts.black.inaccuracy) parts.push(`${counts.white.inaccuracy + counts.black.inaccuracy} inaccuracy`);
+    if (over) parts.push(over.replace("_", " "));
+    this.setStatus(parts.length ? `${head} — ${parts.join(", ")}` : head);
+
+    const tagIcon = { best: "★", good: "·", inaccuracy: "?!", mistake: "?", blunder: "??" };
+    const frag = document.createDocumentFragment();
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = `line review-${row.tag}`;
+      li.title = `${row.san}: ${row.tag}, ${fmt(row.accuracy)} accuracy`;
+      const san = document.createElement("span");
+      san.className = "san";
+      san.textContent = `${tagIcon[row.tag] || "·"} ${row.san}`;
+      const sc = document.createElement("span");
+      sc.className = "sc";
+      sc.textContent = row.eval;
+      li.append(san, sc);
+      frag.append(li);
+    }
+    if (frag.childNodes.length) this.el.lines.replaceChildren(frag);
   }
 
   setServerConfig({ url, token } = {}) {

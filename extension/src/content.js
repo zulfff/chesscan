@@ -10,6 +10,7 @@ import {
   opponentInCheck,
   successorOf,
   reachableIn,
+  sanLineToUci,
   FILES,
 } from "./fen.js";
 import { turnFromDiff, turnFromLastMove } from "./turn.js";
@@ -77,6 +78,10 @@ const state = {
   server: null, // ServerEngine, created at boot
   serverHealthy: null, // null = not probed yet
   recentFens: [], // recent accepted positions, for threefold repetition
+  sans: [], // the game so far, from the page's move list
+  review: null, // "idle" | "running" | "done"; the post-game review state
+  reviewAbort: null, // AbortController for the review in flight
+  reviewedSans: null, // the SAN line the finished report is for
 };
 
 // A testing harness, not a ladder bot: one arming plays at most this many moves.
@@ -530,6 +535,121 @@ function analyze(fen, turn) {
       renderLines(lines, fen, turn);
     },
   });
+}
+
+// --- post-game review --------------------------------------------------------
+
+// Re-check the game-over state at most this often: reading the SAN line and
+// checking it against chess.js is cheap but not free, and tick() runs on a
+// mutation observer.
+const REVIEW_CHECK_INTERVAL_MS = 2000;
+let lastReviewCheck = 0;
+
+/** Evaluation in pawns from White's view, for the review rows. */
+function formatEval(evalAfter) {
+  const v = Number(evalAfter);
+  if (!Number.isFinite(v)) return "0.0";
+  return v.toFixed(1);
+}
+
+/**
+ * Send the finished game to the server for review. Runs automatically once the
+ * page's move list ends a game (checkmate, stalemate, draw), or by hand from
+ * the review button. The live search keeps running; the review walks the game
+ * on the server and paints the report when it is done.
+ */
+async function startReview({ auto = false } = {}) {
+  if (state.review === "running") return;
+  const sans = state.sans;
+  if (!sans || sans.length < 4) {
+    if (!auto) panel.setReview(false, "no moves to review yet");
+    return;
+  }
+
+  let uci;
+  try {
+    ({ uci } = sanLineToUci(sans));
+  } catch (err) {
+    console.warn(LOG, "review: unreadable move list", err);
+    if (!auto) panel.setReview(false, "move list unreadable");
+    return;
+  }
+
+  state.review = "running";
+  state.reviewAbort = new AbortController();
+  panel.setReview(true, "sending game…");
+
+  const rows = [];
+  const counts = {
+    white: { best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 },
+    black: { best: 0, good: 0, inaccuracy: 0, mistake: 0, blunder: 0 },
+  };
+
+  try {
+    const done = await server.review({
+      start: null,
+      moves: uci,
+      depth: state.settings.depth || 14,
+      timeMs: 1200,
+      signal: state.reviewAbort.signal,
+      onMove: ev => {
+        const side = ev.ply % 2 === 0 ? "white" : "black";
+        if (counts[side][ev.tag] !== undefined) counts[side][ev.tag] += 1;
+        const san = sans[ev.ply] || ev.uci;
+        rows[ev.ply] = {
+          san,
+          tag: ev.tag,
+          loss: ev.loss,
+          accuracy: ev.accuracy,
+          eval: formatEval(ev.eval_after),
+        };
+        const seen = rows.filter(Boolean).length;
+        panel.setReview(true, `reviewing ${seen}/${uci.length}…`);
+      },
+      onError: err => {
+        console.warn(LOG, "review error", err);
+      },
+    });
+    if (!done) throw new Error("review stream ended early");
+    state.review = "done";
+    state.reviewedSans = sans.join(" ");
+    panel.setReview(false, "");
+    panel.setReviewReport({ accuracy: done.accuracy, counts, game_over: done.game_over, rows: rows.filter(Boolean) });
+  } catch (err) {
+    state.review = "idle";
+    if (err?.name === "AbortError") {
+      panel.setReview(false, "");
+    } else {
+      panel.setReview(false, `review failed: ${err.message}`);
+    }
+  } finally {
+    state.reviewAbort = null;
+  }
+}
+
+/**
+ * Auto-send: when the page's move list ends a game (mate, stalemate, draw,
+ * flagged by the SAN line in chess.js) the review goes out once. Repeated calls
+ * are cheap: a SAN check and a string compare, throttled.
+ */
+function maybeAutoReview() {
+  if (!state.settings.autoReview) return;
+  if (state.review === "running" || state.review === "done") return;
+  const sans = state.sans;
+  if (!sans || sans.length < 4) return;
+  const now = Date.now();
+  if (now - lastReviewCheck < REVIEW_CHECK_INTERVAL_MS) return;
+  lastReviewCheck = now;
+
+  let over = null;
+  try {
+    over = sanLineToUci(sans).over;
+  } catch {
+    return; // mid-game garbage in the list; wait for the next tick
+  }
+  if (!over) return;
+  if (state.reviewedSans === sans.join(" ")) return; // already reviewed this game
+  startReview({ auto: true });
 }
 
 // --- autoplay ---------------------------------------------------------------
@@ -1047,6 +1167,10 @@ function tick() {
   state.castling = castling;
   state.enPassant = enPassant;
   state.ply = nextPly;
+  if (Array.isArray(board.sans) && board.sans.length) {
+    state.sans = board.sans;
+    maybeAutoReview();
+  }
   // The anchor is the real position, never the manually flipped view: the next
   // real move has to be explained from the board's own side to move.
   state.anchorFen = anchorFen;

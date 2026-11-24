@@ -19,6 +19,7 @@ export class ServerEngine {
     this.onError = onError || null;
     this.seq = 0;
     this.job = null;
+    this.reviewJob = null;
     // The last `done` payload, kept so autoplay can use the think time the
     // server already worked out for this position.
     this.lastDone = null;
@@ -125,6 +126,65 @@ export class ServerEngine {
       /* already gone */
     }
     this.job = null;
+  }
+
+  /**
+   * Post-game review: send a finished game as UCI moves, get one `move` event
+   * per ply and a final `done` with accuracies and mistake counts. Runs
+   * independently of the live search job, so the panel keeps analysing while
+   * the review walks the game.
+   */
+  review({ start, moves, depth, timeMs, signal, onMove, onDone, onError } = {}) {
+    const headers = { "content-type": "application/json" };
+    if (this.token) headers.authorization = `Bearer ${this.token}`;
+    const body = JSON.stringify({ start, moves, depth, time_ms: timeMs });
+
+    return (async () => {
+      try {
+        const res = await fetch(`${this.url}/v1/review`, {
+          method: "POST",
+          headers,
+          body,
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          throw new Error(`server answered ${res.status}`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buf = "";
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) >= 0) {
+            const raw = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            if (!raw) continue;
+            let event;
+            try {
+              event = JSON.parse(raw);
+            } catch {
+              continue;
+            }
+            if (event.type === "move") {
+              onMove?.(event);
+            } else if (event.type === "done") {
+              onDone?.(event);
+              return event;
+            } else if (event.type === "error") {
+              const err = new Error(event.message || "server error");
+              onError?.(err);
+              throw err;
+            }
+          }
+        }
+      } catch (err) {
+        if (err?.name !== "AbortError") onError?.(err);
+        throw err;
+      }
+    })();
   }
 
   terminate() {

@@ -274,3 +274,37 @@ export function opponentInCheck(fen) {
     return false;
   }
 }
+
+/**
+ * Play a whole game of SAN moves from the standard start (or `startFen`) and
+ * return the UCI move list for the post-game review. The page's move list is
+ * the only record of a finished chess.com game and it speaks SAN; the review
+ * server speaks UCI. Throws on the first move that is not legal in the line so
+ * far: a truncated or mis-read list is an error, not half a game.
+ */
+export function sanLineToUci(sans, startFen = undefined) {
+  const game = new Chess(startFen);
+  const uci = [];
+  for (const raw of sans) {
+    const san = String(raw).replace(/[!?]+$/, "").trim();
+    let move = null;
+    try {
+      move = game.move(san);
+    } catch {
+      move = null;
+    }
+    if (!move) throw new Error(`illegal SAN '${raw}' at ply ${uci.length}`);
+    uci.push(move.from + move.to + (move.promotion || ""));
+  }
+  return { uci, over: gameOverOf(game) };
+}
+
+/** Why the game on `game` is over, or null while it goes on. */
+function gameOverOf(game) {
+  if (game.isCheckmate()) return game.turn() === "w" ? "checkmate_white" : "checkmate_black";
+  if (game.isStalemate()) return "stalemate";
+  if (game.isInsufficientMaterial()) return "insufficient_material";
+  if (game.isThreefoldRepetition()) return "threefold";
+  if (game.isDraw()) return "fifty_moves";
+  return null;
+}
