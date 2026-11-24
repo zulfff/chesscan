@@ -7,6 +7,7 @@
 
 mod chess;
 mod protocol;
+mod review;
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -84,6 +85,7 @@ async fn main() {
         .route("/", get(root))
         .route("/v1/health", get(health))
         .route("/v1/analyze", post(analyze))
+        .route("/v1/review", post(review_handler))
         .layer(cors)
         .with_state(state);
 
@@ -101,7 +103,7 @@ async fn root() -> impl IntoResponse {
     let body = serde_json::json!({
         "name": "chesscan-server",
         "version": env!("CARGO_PKG_VERSION"),
-        "endpoints": ["/v1/analyze", "/v1/health"]
+        "endpoints": ["/v1/analyze", "/v1/review", "/v1/health"]
     });
     ([(header::CONTENT_TYPE, "application/json")], body.to_string())
 }
@@ -191,6 +193,80 @@ fn send(tx: &mpsc::UnboundedSender<Result<Bytes, Infallible>>, ev: Event) {
             let _ = tx.send(Ok(Bytes::from(buf)));
         }
         Err(e) => warn!("could not serialise event: {e}"),
+    }
+}
+
+/// POST /v1/review: a finished game comes in as UCI moves, a per-move report
+/// streams back as NDJSON, one `move` event per ply and a final `done`.
+async fn review_handler(State(state): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if let Some(token) = state.token.clone() {
+        let bearer = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|v| v == token)
+            .unwrap_or(false);
+        let header_token = headers
+            .get("x-chesscan-token")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v == token)
+            .unwrap_or(false);
+        if !bearer && !header_token {
+            return unauthorized();
+        }
+    }
+
+    let req: review::ReviewRequest = match serde_json::from_str(&body) {
+        Ok(r) => r,
+        Err(e) => return bad_request(&format!("bad JSON: {e}")),
+    };
+    if req.moves.is_empty() {
+        return bad_request("no moves to review");
+    }
+
+    let permit = match state.max_jobs.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::CONTENT_TYPE, "application/json")],
+                "{\"error\":\"busy\"}".to_string(),
+            )
+                .into_response()
+        }
+    };
+
+    let (tx, rx) = mpsc::unbounded_channel::<Result<Bytes, Infallible>>();
+    std::thread::spawn(move || {
+        let _permit = permit;
+        let result = review::review(&req, |ev| match &ev {
+            review::ReviewEvent::Error { message } => {
+                warn!("review error: {message}");
+            }
+            _ => send_review(&tx, ev),
+        });
+        match result {
+            Ok(done) => send_review(&tx, done),
+            Err(message) => send_review(&tx, review::ReviewEvent::Error { message }),
+        }
+    });
+
+    let stream = UnboundedReceiverStream::new(rx);
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/x-ndjson")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(axum::body::Body::from_stream(stream))
+        .expect("response")
+}
+
+fn send_review(tx: &mpsc::UnboundedSender<Result<Bytes, Infallible>>, ev: review::ReviewEvent) {
+    match serde_json::to_vec(&ev) {
+        Ok(mut buf) => {
+            buf.push(b'\n');
+            let _ = tx.send(Ok(Bytes::from(buf)));
+        }
+        Err(e) => warn!("could not serialise review event: {e}"),
     }
 }
 
